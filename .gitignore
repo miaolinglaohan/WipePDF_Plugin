@@ -1,0 +1,10 @@
+build/
+build_*/
+*.obj
+*.pdb
+*.exp
+*.lib
+*.tmp
+.vs/
+.vscode/
+Thumbs.db
