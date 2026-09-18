@@ -9,28 +9,25 @@ add_compile_options(/utf-8)
 set(CMAKE_SHARED_LIBRARY_PREFIX "")
 set(CMAKE_SHARED_LIBRARY_SUFFIX ".api")
 
-# Acrobat SDK directory
-if(DEFINED ENV{ACROBAT_SDK_DIR})
-    set(ACROBAT_SDK_DIR "$ENV{ACROBAT_SDK_DIR}")
-else()
-    set(ACROBAT_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
-endif()
-
+set(ACROBAT_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
 message(STATUS "Acrobat SDK Directory: ${ACROBAT_SDK_DIR}")
 
 include_directories(
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    "${ACROBAT_SDK_DIR}/Headers"
     "${ACROBAT_SDK_DIR}/Headers/SDK"
+    "${ACROBAT_SDK_DIR}/Headers/API"
 )
 
 add_definitions(
-    -DWIN_PLATFORM
-    -DWIN32
+    -DWIN_PLATFORM=1
+    -DWIN_ENV=1
+    -DPLATFORM=\"winpltfm.h\"
+    -DWIN32=1
     -D_WINDOWS
     -D_USRDLL
     -DWIPEPDF_EXPORTS
-    -DPRODUCT=\"Plugin.h\"
+    -DPLUGIN=1
+    -DPRODUCT="Plugin.h"
 )
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -44,13 +41,9 @@ set(PLUGIN_SOURCES
     src/PluginMain.cpp
     src/MenuHandler.cpp
     src/WatermarkService.cpp
+    sdk/Headers/API/PIMain.c
+    src/WipePDF.def
 )
-
-if(EXISTS "${ACROBAT_SDK_DIR}/Headers/SDK/PIMain.c")
-    list(APPEND PLUGIN_SOURCES "${ACROBAT_SDK_DIR}/Headers/SDK/PIMain.c")
-elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/PIMain.c")
-    list(APPEND PLUGIN_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/PIMain.c")
-endif()
 
 add_library(WipePDF SHARED ${PLUGIN_SOURCES})
 

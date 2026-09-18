@@ -1,52 +1,69 @@
-# WipePDF Acrobat Plugin (清印 - Acrobat 增强插件版)
+# WipePDF Acrobat 插件版 (Adobe Acrobat 64-bit 原生增强插件)
 
-基于 **Adobe Acrobat Core API** 原生开发的专业 PDF 顽固水印与透明超链清除插件。
+基于 **Adobe Acrobat Core API** 原生开发的专业 PDF 顽固水印清理与透视分析插件。
 
 ---
 
-## 一、为什么选择 Acrobat 插件版？
+## 🌟 为什么从独立客户端演进为 Acrobat 插件？
 
-| 特性 | 独立版 (`WipePDF.exe`) | Acrobat 插件版 (`WipePDF.api`) |
+| 维度对比 | 独立客户端 (`WipePDF.exe`) | Acrobat 原生插件 (`WipePDF.api`) |
 | :--- | :--- | :--- |
-| **文件体积** | ~27 MB（自带 MuPDF + Qt6） | **~300 KB - 600 KB**（极度轻量！） |
-| **PDF 引擎** | 第三方开源引擎 (MuPDF) | **Adobe 官方原生引擎** (最强兼容性) |
-| **交互体验** | 独立窗口预览、点选 | **无缝融入 Acrobat 菜单与工具栏** |
-| **撤销/重做** | 自研单步撤销 | **原生支持 Acrobat Ctrl+Z 历史回退** |
-| **排版保真度** | 依赖外部重写 | **原生 PDE 对象级修剪，100% 原始保真** |
+| **单文件体积** | ~27 MB（自带解析引擎与 Qt 运行时） | **仅 19.5 KB**（极致精简轻量） |
+| **PDF 解析引擎** | 外部第三方引擎 | **Adobe 官方原生渲染内核** |
+| **操作工作流** | 需在独立软件打开/保存/切换 | **无缝融入 Acrobat Pro 顶部菜单栏** |
+| **撤销与重做** | 需自行维护状态 | **完美继承 Acrobat 原生撤销栈** |
+| **排版保护** | 外部二次重构可能掉格式 | **原生 PDE 对象级操作，100% 保真** |
+| **杜绝中心白块** | 传统遮罩容易连带抹白正文 | **纯对象过滤剔除，绝不白块覆盖** |
 
 ---
 
-## 二、功能特性
+## 🛠️ 核心功能与特性
 
-- **透明文字超链检测与消除**：识别 `ca == 0` 或半透明的诱导性超链文字，一键消除。
-- **全页灰色 Pattern 纹理清除**：精准剔除页面背景平铺的花式背景水印。
-- **底部推广条带清除**：定位页脚处的宣传网址和下载提示。
-- **非破坏性编辑**：直接操作 `PDEContent` 图元树，只删水印图元，正文绝不挖空、不留白块。
+- **透视扫描分析**：点击【扫描当前页面水印元素】，即可全面剖析页面中的文字、路径、底纹填充、透明文字、链接注解数量与命中关键词。
+- **透明/隐形文字清除**：自动识别 `RenderMode=3`（无描边无填充）以及 `Opacity == 0` 的隐形推广覆盖层，一键消除。
+- **全页 Pattern 填充与底纹清除**：精准识别 `Pattern` 类型的全页平铺、交叉网格或斜纹水印，保留正文图文。
+- **推广链接与页脚通栏**：自动剔除页面浮动的恶意引流 `Link` 注解以及底部通栏广告条。
+- **无感即时刷新**：采用 `PDPageNotifyContentsDidChange`，清理后页面即时无感重绘，无需重新打开文件。
 
 ---
 
-## 三、快速构建与安装
+## 🚀 快速安装与使用
 
-### 1. 构建环境要求
-- Windows 10 / 11 64-bit
-- Visual Studio 2022 / BuildTools (已配置)
-- CMake 3.20+ 与 Ninja
+### 方式一：一键自动安装（推荐）
 
-### 2. 一键编译
-在项目根目录下运行：
+在项目根目录下，直接双击运行：
+```
+一键安装到Acrobat.bat
+```
+*(系统若弹出管理员 UAC 授权提示，点击“是”即可)*
+
+脚本会自动将编译好的 `WipePDF.api` 部署至：
+`C:\Program Files\Adobe\Acrobat DC\Acrobat\plug_ins\WipePDF.api`
+
+### 方式二：手动复制安装
+
+将 `build/WipePDF.api` 复制到您的 Acrobat 插件目录：
+`C:\Program Files\Adobe\Acrobat DC\Acrobat\plug_ins\`
+
+---
+
+## 🎯 在 Acrobat 中使用 WipePDF
+
+1. 打开 **Adobe Acrobat Pro**。
+2. 打开任意带有顽固水印的 PDF 文档。
+3. 观察 Acrobat 顶部主菜单栏，点击新增的 **【水印清理 (WipePDF)】** 菜单：
+   - **一键清除当前文档水印**：秒级清理全文所有页面的顽固水印对象并即时刷新。
+   - **扫描当前页面水印元素...**：透视展示当前页面的详细图元分布与水印特征。
+   - **批量清除文档水印...**：批量批处理接口。
+   - **水印清除选项设置...**：查看当前启用的过滤规则。
+4. 满意后直接按 `Ctrl + S` 保存文档。
+
+---
+
+## 💻 源码编译说明
+
 ```powershell
-.\build.ps1 -Arch x64
+# 运行 build.ps1 重新编译
+.\build.ps1 -Clean
 ```
-编译成功后，将在 `build_x64/` 目录下生成 `WipePDF.api`（体积仅数百 KB）。
-
-### 3. 安装到 Acrobat
-将生成的 `WipePDF.api` 复制到 Adobe Acrobat 安装目录下的 `plug_ins` 文件夹中：
-```
-C:\Program Files\Adobe\Acrobat DC\Acrobat\plug_ins\WipePDF.api
-```
-或运行自带脚本：
-```powershell
-.\scripts\install_plugin.ps1
-```
-
-启动 Adobe Acrobat，即可在顶部菜单和编辑工具中看到 **WipePDF** 专属功能项！
+编译产物位于 `build/WipePDF.api`。

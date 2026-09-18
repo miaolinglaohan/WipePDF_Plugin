@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "PluginInit.h"
 
 namespace wipepdf {
@@ -8,8 +8,8 @@ public:
     static void setupMenus();
     static void cleanupMenus();
 
-    // Callbacks
     static void onCleanActiveDoc();
+    static void onInspectCurrentPage();
     static void onCleanBatch();
     static void onShowSettings();
     static void onAbout();
