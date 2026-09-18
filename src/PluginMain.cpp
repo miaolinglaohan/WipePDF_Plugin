@@ -1,5 +1,6 @@
 ﻿#include "PluginInit.h"
 #include "MenuHandler.h"
+#include "SelectionTool.h"
 #include <cstdio>
 
 static void LogPlugin(const char *msg) {
@@ -48,6 +49,7 @@ ACCB1 ASBool ACCB2 PluginImportHFTs(void) {
 ACCB1 ASBool ACCB2 PluginInit(void) {
     LogPlugin("PluginInit: setting up menus...");
     wipepdf::MenuHandler::setupMenus();
+    wipepdf::SelectionTool::RegisterTool();
     LogPlugin("PluginInit: completed successfully.");
     return TRUE;
 }
@@ -56,6 +58,7 @@ ACCB1 ASBool ACCB2 PluginInit(void) {
 ACCB1 ASBool ACCB2 PluginUnload(void) {
     LogPlugin("PluginUnload: cleaning up menus...");
     wipepdf::MenuHandler::cleanupMenus();
+    wipepdf::SelectionTool::UnregisterTool();
     return TRUE;
 }
 

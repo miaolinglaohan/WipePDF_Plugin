@@ -11,6 +11,7 @@ public:
     static void onCleanActiveDoc();
     static void onInspectCurrentPage();
     static void onCleanBatch();
+    static void onSelectionTool();
     static void onShowSettings();
     static void onAbout();
 };
