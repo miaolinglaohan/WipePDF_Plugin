@@ -5,6 +5,7 @@
 namespace wipepdf {
 
 AVTool SelectionTool::gSelectionTool = NULL;
+AVTool SelectionTool::gPreviousTool = NULL;
 
 void SelectionTool::RegisterTool() {
     gSelectionTool = (AVTool)ASmalloc(sizeof(AVToolRec));
@@ -25,7 +26,8 @@ void SelectionTool::UnregisterTool() {
     }
 }
 
-void SelectionTool::ActivateTool() {
+void SelectionTool::ActivateTool(AVTool prevTool) {
+    gPreviousTool = prevTool;
     AVDoc avDoc = AVAppGetActiveDoc();
     if (avDoc) {
         AVAppSetActiveTool(gSelectionTool, false);
@@ -50,10 +52,14 @@ ASAtom ACCB1 SelectionTool::GetTypeProc(AVTool tool) {
 ASBool ACCB1 SelectionTool::DoClickProc(AVTool tool, AVPageView pageView, ASInt16 x, ASInt16 y, ASInt16 flags, ASInt16 clickNo) {
     HandleClick(pageView, x, y);
     
-    // Switch back to Hand tool
-    AVTool handTool = AVAppGetToolByName(ASAtomFromString("Hand"));
-    if (handTool) {
-        AVAppSetActiveTool(handTool, false);
+    // Revert to previous tool
+    if (gPreviousTool) {
+        AVAppSetActiveTool(gPreviousTool, false);
+    } else {
+        AVTool handTool = AVAppGetToolByName(ASAtomFromString("Hand"));
+        if (handTool) {
+            AVAppSetActiveTool(handTool, false);
+        }
     }
     return true;
 }

@@ -147,7 +147,8 @@ void MenuHandler::onSelectionTool() {
         MessageBoxW(NULL, L"请在 Adobe Acrobat 中打开需要清理水印的 PDF 文档", L"WipePDF 提示", MB_OK | MB_ICONWARNING);
         return;
     }
-    SelectionTool::ActivateTool();
+    AVTool activeTool = AVAppGetActiveTool();
+    SelectionTool::ActivateTool(activeTool);
 }
 
 void MenuHandler::onInspectCurrentPage() {

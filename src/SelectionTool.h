@@ -7,10 +7,11 @@ class SelectionTool {
 public:
     static void RegisterTool();
     static void UnregisterTool();
-    static void ActivateTool();
+    static void ActivateTool(AVTool prevTool);
 
 private:
     static AVTool gSelectionTool;
+    static AVTool gPreviousTool;
 
     // Callbacks
     static ASBool ACCB1 ComputeEnabledProc(void *data);
