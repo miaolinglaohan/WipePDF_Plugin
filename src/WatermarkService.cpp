@@ -290,11 +290,21 @@ CleanResult WatermarkService::countDocument(PDDoc pddoc, const CleanOptions &opt
 CleanResult WatermarkService::countPageContent(PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox) {
     CleanResult res;
     ASInt32 numElems = PDEContentGetNumElems(content);
+    bool watermarkOnly = opts.targetFingerprint.active && opts.targetFingerprint.isWatermarkMarked;
     for (ASInt32 i = 0; i < numElems; ++i) {
         PDEElement elem = PDEContentGetElem(content, i);
         if (!elem) continue;
 
         ASInt32 type = PDEObjectGetType((PDEObject)elem);
+
+        if (watermarkOnly) {
+            if (type == kPDEContainer && isWatermarkMarkedContainer(elem)) {
+                res.totalRemoved++;
+                res.removedTargetFingers++;
+            }
+            continue;
+        }
+
         if (type == kPDEText) {
             std::string matchType, kw;
             if (isWatermarkText((PDEText)elem, opts, cropBox, matchType, kw)) {
@@ -349,12 +359,26 @@ CleanResult WatermarkService::countContainer(PDEElement container, const CleanOp
 CleanResult WatermarkService::cleanPageContent(PDPage page, PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox) {
     CleanResult res;
     ASInt32 numElems = PDEContentGetNumElems(content);
+    // When the user point-picked a PDF-standard watermark container, delete
+    // ONLY such containers and skip every other element - the safest possible
+    // "remove the same watermark everywhere" semantics.
+    bool watermarkOnly = opts.targetFingerprint.active && opts.targetFingerprint.isWatermarkMarked;
 
     for (ASInt32 i = numElems - 1; i >= 0; --i) {
         PDEElement elem = PDEContentGetElem(content, i);
         if (!elem) continue;
 
         ASInt32 type = PDEObjectGetType((PDEObject)elem);
+
+        if (watermarkOnly) {
+            // In watermark-only mode, only marked containers are removed.
+            if (type == kPDEContainer && isWatermarkMarkedContainer(elem)) {
+                PDEContentRemoveElem(content, i);
+                res.totalRemoved++;
+                res.removedTargetFingers++;
+            }
+            continue;
+        }
 
         if (type == kPDEText) {
             std::string matchType, kw;
@@ -482,7 +506,13 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
     PDEElementGetBBox((PDEElement)text, &bbox);
     float bBottom = ASFixedToFloat(bbox.bottom);
     float pageBottom = ASFixedToFloat(cropBox.bottom);
-    
+
+    // NOTE: a geometry-only "large overlay" rule was tried but removed: a big
+    // text bbox can be the whole page's body text merged into one PDE text
+    // element, so deleting it would destroy content. Overlay watermarks are
+    // handled precisely via the manual point-and-click path instead (human
+    // confirms what is deleted), keeping one-click clean conservative.
+
     // Check fingerprint
     if (opts.targetFingerprint.active && opts.targetFingerprint.type == kPDEText) {
         for (ASInt32 r = 0; r < numRuns; ++r) {
@@ -532,8 +562,37 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
                 std::vector<ASUns8> buf(len + 1, 0);
                 PDETextGetText(text, kPDETextRun, r, buf.data());
                 std::string s((char*)buf.data(), len);
+                float fontSize = ASFixedToFloat(tState.fontSize);
 
-                for (const auto &kw : opts.customKeywords) {
+                // A run whose bytes are all ASCII holds real characters.
+                // CID/subset-font glyph codes contain high bytes; URL keyword
+                // matching on those would match random glyph patterns and
+                // delete real content, so URL matching is ASCII-only.
+                bool asciiOnly = true;
+                for (unsigned char c : s) {
+                    if (c >= 0x80) { asciiOnly = false; break; }
+                }
+
+                // URL / scanner-brand watermark keywords. These strongly
+                // indicate a watermark; require a minimum size so real body
+                // text URLs (small, inline) are not removed.
+                bool isUrlLike = (s.find("http") != std::string::npos ||
+                                  s.find("www.") != std::string::npos ||
+                                  s.find(".com") != std::string::npos ||
+                                  s.find(".cn") != std::string::npos);
+                if (asciiOnly && isUrlLike && fontSize >= 16.0f) {
+                    outMatchedType = "Keyword";
+                    outMatchedKeyword = "URL Watermark";
+                    return true;
+                }
+                // KeywordInRun matches the exact GBK/UTF-16 byte patterns of
+                // the keywords, so genuine Chinese keywords (test1) match and
+                // random CID glyph codes virtually never do. ASCII keywords
+                // ("www.", ".com") are only matched on ASCII runs so glyph
+                // codes cannot accidentally hit those short patterns.
+                for (const auto &kw : opts.watermarkKeywords) {
+                    bool kwAscii = (kw.find_first_not_of(" -~") == std::string::npos);
+                    if (kwAscii && !asciiOnly) continue;
                     if (KeywordInRun(s, kw)) {
                         outMatchedType = "Keyword";
                         outMatchedKeyword = kw;
@@ -541,8 +600,20 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
                     }
                 }
 
+                for (const auto &kw : opts.customKeywords) {
+                    bool kwAscii = (kw.find_first_not_of(" -~") == std::string::npos);
+                    if (kwAscii && !asciiOnly) continue;
+                    if (KeywordInRun(s, kw)) {
+                        outMatchedType = "Keyword";
+                        outMatchedKeyword = kw;
+                        return true;
+                    }
+                }
+
+                // CamScanner-style footer line at the page bottom. Gated by
+                // removeBottomStrip but only fires on the brand keyword, so it
+                // cannot remove normal bottom text.
                 if (opts.removeBottomStrip && bBottom < pageBottom + 60.0f) {
-                    // CamScanner 页脚常见中文（"全能王"、"扫描"）。
                     if (KeywordInRun(s, "全能王") ||
                         KeywordInRun(s, "扫描")) {
                         outMatchedType = "Keyword";
@@ -602,7 +673,7 @@ bool WatermarkService::isWatermarkPath(PDEPath path, const CleanOptions &opts, c
     float pageBottom = ASFixedToFloat(cropBox.bottom);
 
     if (opts.removeBottomStrip && pw > 50.0f && ph > 50.0f) {
-        // 底部通栏广告条：贴近页面底部、高度很小、宽度占页宽过半。
+        // 底部通栏广告条：贴近页面底部（PDF 坐标 y 小）、高度很小、宽度占页宽过半。
         if (bBottom < pageBottom + 65.0f && bh < 65.0f && bw > pw * 0.60f) {
             outMatchedType = "BottomStrip";
             return true;
@@ -691,6 +762,7 @@ bool WatermarkService::isWatermarkImage(PDEImage img, const CleanOptions &opts, 
     float bBottom = ASFixedToFloat(bbox.bottom);
     float pageBottom = ASFixedToFloat(cropBox.bottom);
 
+    // Small image hugging the page bottom edge (PDF coords: bottom = low y).
     if (bBottom < pageBottom + 65.0f && bw < 70.0f && bh < 70.0f && bw > 10.0f && bh > 10.0f) {
         outMatchedType = "BottomStrip";
         return true;

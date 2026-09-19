@@ -245,6 +245,7 @@ void MenuHandler::onCleanActiveDoc() {
         msg += L"\n";
         if (res.removedLinks > 0) msg += L"  - " + std::to_wstring(res.removedLinks) + L" 处链接注释\n";
         if (res.removedTransparentText > 0) msg += L"  - " + std::to_wstring(res.removedTransparentText) + L" 处透明文本\n";
+        if (res.removedOverlays > 0) msg += L"  - " + std::to_wstring(res.removedOverlays) + L" 处整页覆盖层/大字水印\n";
         if (res.removedKeywordText > 0) msg += L"  - " + std::to_wstring(res.removedKeywordText) + L" 处关键字文本\n";
         if (res.removedPatternPaths > 0) msg += L"  - " + std::to_wstring(res.removedPatternPaths) + L" 处图案/路径\n";
         if (res.removedBottomStrips > 0) msg += L"  - " + std::to_wstring(res.removedBottomStrips) + L" 处底部通栏/贴底小图\n";

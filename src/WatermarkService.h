@@ -21,6 +21,11 @@ struct TargetFingerprint {
     // Form's page transform so position matching can be done in page space.
     bool inForm = false;
     ASFixedMatrix formMatrix = { fixedOne, fixedZero, fixedZero, fixedOne, fixedZero, fixedZero };
+
+    // True when the picked element is a marked-content Container tagged as a
+    // PDF standard watermark (/Artifact /Subtype /Watermark). Deletion then
+    // removes such containers directly instead of matching by geometry.
+    bool isWatermarkMarked = false;
     
     // For Image
     float width = 0;      // displayed width in points
@@ -38,21 +43,30 @@ struct TargetFingerprint {
 };
 
 struct CleanOptions {
-    bool removeTransparentText = true;
-    bool removePatternFills = true;
-    bool removeKeywordText = true;
-    bool removeLinks = true;
-    bool removeBottomStrip = true;
+    // Default rules: CONSERVATIVE for one-click clean - only highly reliable,
+    // content-safe heuristics are on. Riskier geometry heuristics (bottom
+    // strips, pattern fills) default OFF so real content is never removed;
+    // the manual point-and-click flow is the precise, human-verified path.
+    bool removeTransparentText = true; // RenderMode=3 / Opacity=0 (reliable)
+    bool removeLinks = true;           // Link annotations (safe)
+    bool removeKeywordText = true;     // URL/brand keyword text w/ size guard
+    bool removeBottomStrip = false;    // bottom-edge strips - OFF (risky)
+    bool removePatternFills = false;   // pattern fills - OFF (risky)
     
     // For manual point-and-click target
     TargetFingerprint targetFingerprint;
     
-    std::vector<std::string> customKeywords = {
+    // URL / scanner-brand keywords that strongly indicate a watermark even at
+    // small size (matched with a font-size guard inside isWatermarkText).
+    std::vector<std::string> watermarkKeywords = {
         "http://", "https://", "www.", ".com", ".cn", ".net",
+        "扫描全能王", "CamScanner", "免费注册", "biaozhun"
+    };
+    
+    std::vector<std::string> customKeywords = {
         "淘宝", "微信", "加群", "公众号", // 推广引流
         "水印", "盗版", "暴力", "破解",   // 版权提示
         "扫描", "备注",                   // CamScanner 页脚等
-        "CamScanner"
     };
 };
 
@@ -73,6 +87,7 @@ struct CleanResult {
     int removedLinks = 0;
     int removedTransparentText = 0;
     int removedKeywordText = 0;
+    int removedOverlays = 0;      // full-page / large-light overlay text
     int removedPatternPaths = 0;
     int removedBottomStrips = 0;
     int removedImages = 0;
@@ -83,6 +98,7 @@ struct CleanResult {
         removedLinks += other.removedLinks;
         removedTransparentText += other.removedTransparentText;
         removedKeywordText += other.removedKeywordText;
+        removedOverlays += other.removedOverlays;
         removedPatternPaths += other.removedPatternPaths;
         removedBottomStrips += other.removedBottomStrips;
         removedImages += other.removedImages;
@@ -98,6 +114,9 @@ public:
     // preview the deletion scope before the user confirms.
     static CleanResult countDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
     static PageInspectResult inspectPage(PDDoc pddoc, ASInt32 pageIndex, const CleanOptions &opts = CleanOptions());
+    // True if the element is a marked-content Container tagged as a PDF
+    // standard watermark (/Artifact + /Subtype /Watermark).
+    static bool isWatermarkMarkedContainer(PDEElement elem);
 
 private:
     static CleanResult cleanPageContent(PDPage page, PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox);
@@ -107,9 +126,6 @@ private:
     static bool isWatermarkText(PDEText text, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType, std::string &outMatchedKeyword);
     static bool isWatermarkPath(PDEPath path, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType);
     static bool isWatermarkImage(PDEImage img, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType);
-    // True if the element is a marked-content Container tagged as a PDF
-    // standard watermark (/Artifact + /Subtype /Watermark).
-    static bool isWatermarkMarkedContainer(PDEElement elem);
     // Shared position guard used by all matchers.
     static bool fingerprintPositionMatches(const TargetFingerprint &fp, const ASFixedRect &bbox, const ASFixedRect &cropBox);
 };

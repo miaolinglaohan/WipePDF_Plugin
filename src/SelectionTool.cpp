@@ -105,6 +105,80 @@ ASBool ACCB1 SelectionTool::DoClickProc(AVTool tool, AVPageView pageView, ASInt1
     return true;
 }
 
+// Extract a fingerprint from a hit Form/Container. The container's own
+// page-space bbox is authoritative for size/position (Acrobat computed it).
+// Pixel/text attributes come from the first pickable child in its content.
+bool SelectionTool::ExtractContainerFingerprint(PDEElement container, const ASFixedRect &pageBBox,
+                                                TargetFingerprint &fp) {
+    ASInt32 ctype = PDEObjectGetType((PDEObject)container);
+    PDEContent inner = NULL;
+    if (ctype == kPDEForm) {
+        inner = PDEFormGetContent((PDEForm)container);
+    } else if (ctype == kPDEContainer) {
+        inner = PDEContainerGetContent((PDEContainer)container);
+        // Mark the fingerprint so deletion uses the PDF-standard watermark
+        // signal instead of geometry heuristics.
+        if (WatermarkService::isWatermarkMarkedContainer(container)) {
+            fp.isWatermarkMarked = true;
+        }
+    }
+    if (!inner) return false;
+
+    ASInt32 numElems = PDEContentGetNumElems(inner);
+    for (ASInt32 i = numElems - 1; i >= 0; --i) {
+        PDEElement elem = PDEContentGetElem(inner, i);
+        if (!elem) continue;
+        ASInt32 type = PDEObjectGetType((PDEObject)elem);
+
+        // Recurse into nested containers/forms to find a pickable child.
+        if (type == kPDEForm || type == kPDEContainer) {
+            if (ExtractContainerFingerprint(elem, pageBBox, fp)) {
+                return true;
+            }
+            continue;
+        }
+
+        if (type == kPDEImage) {
+            fp.active = true;
+            fp.type = kPDEImage;
+            fp.width = ASFixedToFloat(pageBBox.right - pageBBox.left);
+            fp.height = ASFixedToFloat(pageBBox.top - pageBBox.bottom);
+            PDEImageAttrs attrs;
+            memset(&attrs, 0, sizeof(attrs));
+            PDEImageGetAttrs((PDEImage)elem, &attrs, sizeof(attrs));
+            fp.pixelWidth = attrs.width;
+            fp.pixelHeight = attrs.height;
+            return true;
+        } else if (type == kPDEPath) {
+            fp.active = true;
+            fp.type = kPDEPath;
+            fp.bboxWidth = ASFixedToFloat(pageBBox.right - pageBBox.left);
+            fp.bboxHeight = ASFixedToFloat(pageBBox.top - pageBBox.bottom);
+            PDEGraphicState gState;
+            memset(&gState, 0, sizeof(gState));
+            PDEElementGetGState(elem, &gState, sizeof(gState));
+            if (gState.fillColorSpec.space != NULL) {
+                ASAtom spName = PDEColorSpaceGetName(gState.fillColorSpec.space);
+                if (spName == ASAtomFromString("Pattern")) {
+                    fp.isPattern = true;
+                }
+            }
+            return true;
+        } else if (type == kPDEText) {
+            fp.active = true;
+            fp.type = kPDEText;
+            ASInt32 len = PDETextGetText((PDEText)elem, kPDETextRun, 0, NULL);
+            if (len > 0) {
+                std::string buf(len, '\0');
+                PDETextGetText((PDEText)elem, kPDETextRun, 0, (ASUns8*)&buf[0]);
+                fp.textContent = buf;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 bool SelectionTool::HitTestFormContent(PDEElement container, const ASFixedPoint &pagePt,
                                        const ASFixedMatrix *parentMatrix, TargetFingerprint &fp) {
     // Get the inner content depending on the container kind.
@@ -275,49 +349,27 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
                     i, clickedType, ASFixedToFloat(bbox.left), ASFixedToFloat(bbox.bottom),
                     ASFixedToFloat(bbox.right), ASFixedToFloat(bbox.top));
 
-            // If the clicked element is a Form XObject or a marked-content
-            // Container (e.g. /Artifact /Subtype /Watermark block), the
-            // watermark often lives *inside* it. Recurse into it, transforming
-            // child element bboxes into page coordinates via its matrix so we
-            // pick the actual watermark, not the full-page background behind it.
+            // A Form XObject or marked-content Container (e.g. /Artifact
+            // /Subtype /Watermark block) is the watermark's own box: Acrobat
+            // has already computed its page-space bbox. We treat the container
+            // itself as the target and extract a fingerprint from its content
+            // (pixel dimensions, element type), WITHOUT attempting recursive
+            // matrix transforms which proved unreliable for nested content.
             if (clickedType == kPDEForm || clickedType == kPDEContainer) {
-                ASFixedMatrix pageMatrix; // identity: container content == page space
-                if (clickedType == kPDEForm) {
-                    PDEElementGetMatrix(elem, &pageMatrix);
-                } else {
-                    pageMatrix.a = fixedOne; pageMatrix.b = fixedZero;
-                    pageMatrix.c = fixedZero; pageMatrix.d = fixedOne;
-                    pageMatrix.h = fixedZero; pageMatrix.v = fixedZero;
-                }
-                DiagLog("  Container/Form elem: type=%d matrix=(%.3f,%.3f,%.3f,%.3f,%.1f,%.1f)",
-                        clickedType,
-                        ASFixedToFloat(pageMatrix.a), ASFixedToFloat(pageMatrix.b),
-                        ASFixedToFloat(pageMatrix.c), ASFixedToFloat(pageMatrix.d),
-                        ASFixedToFloat(pageMatrix.h), ASFixedToFloat(pageMatrix.v));
                 TargetFingerprint nestedFp;
-                if (HitTestFormContent(elem, pagePt, &pageMatrix, nestedFp)) {
-                    fp = nestedFp; // keeps nestedFp.formMatrix = element->page matrix
+                if (ExtractContainerFingerprint((PDEElement)elem, bbox, nestedFp)) {
+                    fp = nestedFp;
                     fp.inForm = true;
-                    // Normalized page position: the container's page-space bbox
-                    // (for a /Artifact watermark container, this is exactly the
-                    // watermark's area on the page).
-                    ASFixedRect pageBBox;
-                    MatrixTransformRect(&pageMatrix, &bbox, &pageBBox);
-                    float pbw = ASFixedToFloat(pageBBox.right - pageBBox.left);
-                    float pbh = ASFixedToFloat(pageBBox.top - pageBBox.bottom);
-                    float pcx = ASFixedToFloat((pageBBox.left + pageBBox.right) / 2);
-                    float pcy = ASFixedToFloat((pageBBox.bottom + pageBBox.top) / 2);
-                    fp.relX = pcx / pageW;
-                    fp.relY = pcy / pageH;
-                    fp.relW = pbw / pageW;
-                    fp.relH = pbh / pageH;
+                    // Page-space position from the container's own bbox.
+                    fp.relX = ASFixedToFloat((bbox.left + bbox.right) / 2) / pageW;
+                    fp.relY = ASFixedToFloat((bbox.bottom + bbox.top) / 2) / pageH;
+                    fp.relW = ASFixedToFloat(bbox.right - bbox.left) / pageW;
+                    fp.relH = ASFixedToFloat(bbox.top - bbox.bottom) / pageH;
                     DiagLog("  Container hit OK: type=%d pix=(%dx%d) rel=(%.2f,%.2f) relsize=(%.2f,%.2f)",
                             fp.type, fp.pixelWidth, fp.pixelHeight, fp.relX, fp.relY, fp.relW, fp.relH);
                     break;
                 }
-                DiagLog("  Container miss inside; continuing to lower elements");
-                // Fall through: the container itself may be the target (rare);
-                // keep searching lower elements rather than treating it as a hit.
+                DiagLog("  Container no pickable content; continuing to lower elements");
                 continue;
             }
             

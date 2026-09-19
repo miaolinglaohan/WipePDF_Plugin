@@ -32,6 +32,13 @@ private:
     // background. Returns true and fills `fp` if a pickable element was hit.
     static bool HitTestFormContent(PDEElement container, const ASFixedPoint &pagePt,
                                    const ASFixedMatrix *parentMatrix, TargetFingerprint &fp);
+
+    // Extract a fingerprint from a Form/Container that was hit. The container's
+    // page-space bbox is used for size/position; pixel/text attributes come
+    // from the first pickable child found in its content (no matrix math).
+    // Returns true if a pickable child was found.
+    static bool ExtractContainerFingerprint(PDEElement container, const ASFixedRect &pageBBox,
+                                            TargetFingerprint &fp);
 };
 
 } // namespace wipepdf
