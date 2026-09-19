@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "PluginInit.h"
+#include "WatermarkService.h"
 
 namespace wipepdf {
 
@@ -20,8 +21,17 @@ private:
     static ASAtom ACCB1 GetTypeProc(AVTool tool);
     static ASBool ACCB1 DoClickProc(AVTool tool, AVPageView pageView, ASInt16 x, ASInt16 y, ASInt16 flags, ASInt16 clickNo);
         
-    // Hit testing logic
-    static void HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y);
+    // Hit testing logic. Returns true if the click hit a valid element and
+    // the user confirmed deletion (so the caller can restore the prior tool).
+    static bool HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y);
+
+    // Recursively hit-test inside a Form XObject or marked-content Container
+    // (e.g. a /Artifact /Subtype /Watermark block). Child element bboxes are
+    // transformed into page coordinates using the accumulated matrix, so a
+    // watermark nested in a Form/Container is picked instead of the page
+    // background. Returns true and fills `fp` if a pickable element was hit.
+    static bool HitTestFormContent(PDEElement container, const ASFixedPoint &pagePt,
+                                   const ASFixedMatrix *parentMatrix, TargetFingerprint &fp);
 };
 
 } // namespace wipepdf
