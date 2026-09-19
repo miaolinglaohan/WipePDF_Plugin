@@ -307,7 +307,8 @@ CleanResult WatermarkService::countPageContent(PDEContent content, const CleanOp
 
         if (type == kPDEText) {
             std::string matchType, kw;
-            if (isWatermarkText((PDEText)elem, opts, cropBox, matchType, kw)) {
+            std::vector<ASInt32> runs = getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+            if (!runs.empty()) {
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
                 else if (matchType == "Transparent") res.removedTransparentText++;
@@ -382,8 +383,16 @@ CleanResult WatermarkService::cleanPageContent(PDPage page, PDEContent content, 
 
         if (type == kPDEText) {
             std::string matchType, kw;
-            if (isWatermarkText((PDEText)elem, opts, cropBox, matchType, kw)) {
-                PDEContentRemoveElem(content, i);
+            std::vector<ASInt32> runs = getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+            if (!runs.empty()) {
+                // R01: Safely isolate and remove only the matched text runs.
+                for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+                    PDETextRemove((PDEText)elem, kPDETextRun, *it, 1);
+                }
+                // If the entire text element is now empty, remove it completely.
+                if (PDETextGetNumRuns((PDEText)elem) == 0) {
+                    PDEContentRemoveElem(content, i);
+                }
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
                 else if (matchType == "Transparent") res.removedTransparentText++;
@@ -451,8 +460,14 @@ CleanResult WatermarkService::cleanContainer(PDEElement container, const CleanOp
         ASInt32 type = PDEObjectGetType((PDEObject)elem);
         if (type == kPDEText) {
             std::string matchType, kw;
-            if (isWatermarkText((PDEText)elem, opts, cropBox, matchType, kw)) {
-                PDEContentRemoveElem(inner, i);
+            std::vector<ASInt32> runs = getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+            if (!runs.empty()) {
+                for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+                    PDETextRemove((PDEText)elem, kPDETextRun, *it, 1);
+                }
+                if (PDETextGetNumRuns((PDEText)elem) == 0) {
+                    PDEContentRemoveElem(inner, i);
+                }
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
                 else if (matchType == "Transparent") res.removedTransparentText++;
@@ -498,9 +513,10 @@ CleanResult WatermarkService::cleanContainer(PDEElement container, const CleanOp
     return res;
 }
 
-bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType, std::string &outMatchedKeyword) {
+std::vector<ASInt32> WatermarkService::getWatermarkTextRuns(PDEText text, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType, std::string &outMatchedKeyword) {
+    std::vector<ASInt32> matchedRuns;
     ASInt32 numRuns = PDETextGetNumRuns(text);
-    if (numRuns <= 0) return false;
+    if (numRuns <= 0) return matchedRuns;
     
     ASFixedRect bbox;
     PDEElementGetBBox((PDEElement)text, &bbox);
@@ -523,10 +539,11 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
                 std::string s((char*)buf.data(), len);
                 if (FingerprintExactMatch(s, opts.targetFingerprint.textContent)) {
                     outMatchedType = "Target";
-                    return true;
+                    matchedRuns.push_back(r);
                 }
             }
         }
+        if (!matchedRuns.empty()) return matchedRuns;
     }
     
     // Check built-in rules
@@ -541,7 +558,8 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
                 if (opFill == fixedZero || ASFixedToFloat(opFill) < 0.01f) {
                     outMatchedType = "Transparent";
                     outMatchedKeyword = "Opacity=0";
-                    return true;
+                    matchedRuns.push_back(r);
+                    continue;
                 }
             }
         }
@@ -553,7 +571,8 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
         if (opts.removeTransparentText && tState.renderMode == 3) {
             outMatchedType = "Transparent";
             outMatchedKeyword = "RenderMode=3";
-            return true;
+            matchedRuns.push_back(r);
+                    continue;
         }
 
         if (opts.removeKeywordText) {
@@ -583,7 +602,8 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
                 if (asciiOnly && isUrlLike && fontSize >= 16.0f) {
                     outMatchedType = "Keyword";
                     outMatchedKeyword = "URL Watermark";
-                    return true;
+                    matchedRuns.push_back(r);
+                    continue;
                 }
                 // KeywordInRun matches the exact GBK/UTF-16 byte patterns of
                 // the keywords, so genuine Chinese keywords (test1) match and
@@ -596,7 +616,8 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
                     if (KeywordInRun(s, kw)) {
                         outMatchedType = "Keyword";
                         outMatchedKeyword = kw;
-                        return true;
+                        matchedRuns.push_back(r);
+                    continue;
                     }
                 }
 
@@ -606,7 +627,8 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
                     if (KeywordInRun(s, kw)) {
                         outMatchedType = "Keyword";
                         outMatchedKeyword = kw;
-                        return true;
+                        matchedRuns.push_back(r);
+                    continue;
                     }
                 }
 
@@ -618,14 +640,15 @@ bool WatermarkService::isWatermarkText(PDEText text, const CleanOptions &opts, c
                         KeywordInRun(s, "扫描")) {
                         outMatchedType = "Keyword";
                         outMatchedKeyword = "CamScanner Footer";
-                        return true;
+                        matchedRuns.push_back(r);
+                    continue;
                     }
                 }
             }
         }
     }
 
-    return false;
+    return matchedRuns;
 }
 
 bool WatermarkService::isWatermarkPath(PDEPath path, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType) {
@@ -794,7 +817,8 @@ PageInspectResult WatermarkService::inspectPage(PDDoc pddoc, ASInt32 pageIndex, 
             if (type == kPDEText) {
                 res.textElements++;
                 std::string matchedType, kw;
-                if (isWatermarkText((PDEText)elem, opts, cropBox, matchedType, kw)) {
+                std::vector<ASInt32> runs = getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchedType, kw);
+                if (!runs.empty()) {
                     if (matchedType == "Transparent") {
                         res.transparentTextCount++;
                     } else if (matchedType == "Keyword") {

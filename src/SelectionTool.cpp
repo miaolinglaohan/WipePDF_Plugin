@@ -483,6 +483,25 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
         }
 
         if (confirmed) {
+            // R07: Preview confirmation before execution
+            AVDoc avDoc = AVAppGetActiveDoc();
+            PDDoc pdDoc = avDoc ? AVDocGetPDDoc(avDoc) : NULL;
+            if (pdDoc) {
+                CleanResult countRes = WatermarkService::countDocument(pdDoc, opts);
+                if (countRes.totalRemoved > 0) {
+                    std::wstring previewMsg = L"检测到同款特征。\n即将在当前文档中全局清除 " + 
+                                              std::to_wstring(countRes.totalRemoved) + 
+                                              L" 处此类元素，是否确认？";
+                    int proceed = MessageBoxW(NULL, previewMsg.c_str(), L"WipePDF 预览确认", MB_YESNO | MB_ICONQUESTION);
+                    if (proceed != IDYES) confirmed = false;
+                } else {
+                    MessageBoxW(NULL, L"未在文档中找到更多同款水印元素。", L"WipePDF 提示", MB_OK | MB_ICONINFORMATION);
+                    confirmed = false;
+                }
+            }
+        }
+
+        if (confirmed) {
             // --- Safety backup: save a full copy of the document before
             //     modifying it, so an accidental deletion can be recovered
             //     even if Acrobat auto-saves the changes over the original.
@@ -498,7 +517,7 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
                         ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
                         ASTextDestroy(diText);
                         if (backupPathName) {
-                            PDDocSave(pdDoc, PDSaveFull, backupPathName, ASGetDefaultFileSys(), NULL, NULL);
+                            PDDocSave(pdDoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
                             ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
                         } else {
                             backupPath.clear();

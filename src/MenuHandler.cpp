@@ -382,7 +382,7 @@ void MenuHandler::onCleanBatch() {
         total.add(res);
 
         if (res.totalRemoved > 0) {
-            PDDocSave(doc, PDSaveFull, NULL, ASGetDefaultFileSys(), NULL, NULL);
+            PDDocSave(doc, (PDSaveFull | PDSaveCopy), NULL, ASGetDefaultFileSys(), NULL, NULL);
         }
         PDDocClose(doc);
         okCount++;

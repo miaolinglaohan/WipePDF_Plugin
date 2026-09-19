@@ -47,7 +47,7 @@ struct CleanOptions {
     // content-safe heuristics are on. Riskier geometry heuristics (bottom
     // strips, pattern fills) default OFF so real content is never removed;
     // the manual point-and-click flow is the precise, human-verified path.
-    bool removeTransparentText = true; // RenderMode=3 / Opacity=0 (reliable)
+    bool removeTransparentText = false; // RenderMode=3 / Opacity=0 (risky to OCR, OFF) // RenderMode=3 / Opacity=0 (reliable)
     bool removeLinks = true;           // Link annotations (safe)
     bool removeKeywordText = true;     // URL/brand keyword text w/ size guard
     bool removeBottomStrip = false;    // bottom-edge strips - OFF (risky)
@@ -123,7 +123,7 @@ private:
     static CleanResult countPageContent(PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox);
     static CleanResult cleanContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox);
     static CleanResult countContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox);
-    static bool isWatermarkText(PDEText text, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType, std::string &outMatchedKeyword);
+    static std::vector<ASInt32> getWatermarkTextRuns(PDEText text, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType, std::string &outMatchedKeyword);
     static bool isWatermarkPath(PDEPath path, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType);
     static bool isWatermarkImage(PDEImage img, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType);
     // Shared position guard used by all matchers.
