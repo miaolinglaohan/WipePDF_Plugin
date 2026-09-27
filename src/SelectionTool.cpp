@@ -58,71 +58,61 @@ static void ACCB1 MyPageViewDrawProc(AVPageView pageView, AVDevRect* updateRect,
     }
 #endif
 
-    for (size_t i = 0; i < g_State.candidates.size(); ++i) {
-        const auto& cand = g_State.candidates[i];
-        if (cand.pageIndex != pageNum) continue;
+    // Only draw on the page where the hit target element resides
+    if (g_State.hitPageIndex != pageNum) return;
 
-        ASFixedRect bbox = cand.bbox;
-        AVDevRect devRect;
-        AVPageViewRectToDevice(pageView, &bbox, &devRect);
+    ASFixedRect bbox = g_State.hitBBox;
+    AVDevRect devRect;
+    AVPageViewRectToDevice(pageView, &bbox, &devRect);
 
-        // Normalize device rectangle coordinates (left < right, top < bottom)
-        int left   = (std::min)((int)devRect.left, (int)devRect.right);
-        int right  = (std::max)((int)devRect.left, (int)devRect.right);
-        int top    = (std::min)((int)devRect.top, (int)devRect.bottom);
-        int bottom = (std::max)((int)devRect.top, (int)devRect.bottom);
+    // Normalize device rectangle coordinates (left < right, top < bottom)
+    int left   = (std::min)((int)devRect.left, (int)devRect.right);
+    int right  = (std::max)((int)devRect.left, (int)devRect.right);
+    int top    = (std::min)((int)devRect.top, (int)devRect.bottom);
+    int bottom = (std::max)((int)devRect.top, (int)devRect.bottom);
 
-        // Ensure minimum 4x4 px size so thin lines don't disappear
-        if (right <= left) right = left + 4;
-        if (bottom <= top) bottom = top + 4;
+    // Ensure minimum 4x4 px size so thin lines don't disappear
+    if (right <= left) right = left + 4;
+    if (bottom <= top) bottom = top + 4;
 
-        // Is this the primary element the user directly clicked on?
-        bool isHitElem = (cand.pageIndex == g_State.hitPageIndex &&
-                          std::fabs(ASFixedToFloat(cand.bbox.left) - ASFixedToFloat(g_State.hitBBox.left)) < 2.0f &&
-                          std::fabs(ASFixedToFloat(cand.bbox.bottom) - ASFixedToFloat(g_State.hitBBox.bottom)) < 2.0f);
+    // 1. Native Acrobat Outline rendering (reliable across Acrobat versions, stays pinned to PDF page)
+    PDColorValueRec acroColor;
+    acroColor.space = PDDeviceRGB;
+    acroColor.value[0] = fixedOne; // Pure Red: 1.0
+    acroColor.value[1] = 0;
+    acroColor.value[2] = 0;
+    AVPageViewSetColor(pageView, &acroColor);
 
-        // 1. Native Acrobat Outline rendering (reliable across Acrobat versions)
-        PDColorValueRec acroColor;
-        acroColor.space = PDDeviceRGB;
-        acroColor.value[0] = fixedOne; // Red: 1.0
-        acroColor.value[1] = isHitElem ? 0 : ASFloatToFixed(0.35f); // Hit: pure red, others: orange-red
-        acroColor.value[2] = 0;
-        AVPageViewSetColor(pageView, &acroColor);
-
-        AVDevRect drawRect;
-        drawRect.left = (ASInt16)left;
-        drawRect.right = (ASInt16)right;
-        drawRect.top = (ASInt16)top;
-        drawRect.bottom = (ASInt16)bottom;
-        AVPageViewDrawRectOutline(pageView, &drawRect, isHitElem ? 3 : 2, NULL, 0);
+    AVDevRect drawRect;
+    drawRect.left = (ASInt16)left;
+    drawRect.right = (ASInt16)right;
+    drawRect.top = (ASInt16)top;
+    drawRect.bottom = (ASInt16)bottom;
+    AVPageViewDrawRectOutline(pageView, &drawRect, 3, NULL, 0);
 
 #if WIN_PLATFORM
-        // 2. GDI direct offscreen HDC rendering: crisp solid border and "目标水印" badge
-        if (hdc) {
-            COLORREF penColor = isHitElem ? RGB(255, 0, 0) : RGB(255, 110, 0);
-            HPEN hPen = CreatePen(PS_SOLID, isHitElem ? 3 : 2, penColor);
-            HGDIOBJ hOldPen = SelectObject(hdc, hPen);
-            HGDIOBJ hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    // 2. GDI offscreen HDC rendering: crisp solid border and "目标水印" badge
+    if (hdc) {
+        HPEN hPen = CreatePen(PS_SOLID, 3, RGB(255, 0, 0));
+        HGDIOBJ hOldPen = SelectObject(hdc, hPen);
+        HGDIOBJ hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-            // Expand by 1px so the frame sits slightly outside the text glyphs
-            Rectangle(hdc, left - 1, top - 1, right + 1, bottom + 1);
+        // Expand by 1px so the frame sits slightly outside the elements
+        Rectangle(hdc, left - 1, top - 1, right + 1, bottom + 1);
 
-            if (isHitElem) {
-                const wchar_t* badge = L" 目标水印 ";
-                SetBkMode(hdc, OPAQUE);
-                SetBkColor(hdc, RGB(220, 20, 20));
-                SetTextColor(hdc, RGB(255, 255, 255));
-                int textY = top - 18;
-                if (textY < 2) textY = bottom + 2;
-                TextOutW(hdc, left - 1, textY, badge, (int)wcslen(badge));
-            }
+        const wchar_t* badge = L" 目标水印 ";
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, RGB(220, 20, 20));
+        SetTextColor(hdc, RGB(255, 255, 255));
+        int textY = top - 18;
+        if (textY < 2) textY = bottom + 2;
+        TextOutW(hdc, left - 1, textY, badge, (int)wcslen(badge));
 
-            SelectObject(hdc, hOldBrush);
-            SelectObject(hdc, hOldPen);
-            DeleteObject(hPen);
-        }
-#endif
+        SelectObject(hdc, hOldBrush);
+        SelectObject(hdc, hOldPen);
+        DeleteObject(hPen);
     }
+#endif
 
 #if WIN_PLATFORM
     if (hdc) {
@@ -628,53 +618,6 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
         AVPageViewInvalidateRect(pageView, NULL);
         AVPageViewDrawNow(pageView);
 
-        // 2. Direct screen canvas draw on AVPageView window (guarantees instant visual outline on screen)
-        WinPort port = (WinPort)AVPageViewAcquireMachinePort(pageView);
-        HWND hViewWnd = port ? port->hWnd : NULL;
-        if (hViewWnd) {
-            AVDevRect devRect;
-            AVPageViewRectToDevice(pageView, &hitPageBBox, &devRect);
-            int left   = (std::min)((int)devRect.left, (int)devRect.right);
-            int right  = (std::max)((int)devRect.left, (int)devRect.right);
-            int top    = (std::min)((int)devRect.top, (int)devRect.bottom);
-            int bottom = (std::max)((int)devRect.top, (int)devRect.bottom);
-            if (right <= left) right = left + 4;
-            if (bottom <= top) bottom = top + 4;
-
-            HDC hdcScreen = GetDC(hViewWnd);
-            if (hdcScreen) {
-                HPEN hRedPen = CreatePen(PS_SOLID, 4, RGB(255, 0, 0));
-                HGDIOBJ hOldPen = SelectObject(hdcScreen, hRedPen);
-                HGDIOBJ hOldBrush = SelectObject(hdcScreen, GetStockObject(NULL_BRUSH));
-
-                // Draw solid red 4px box
-                Rectangle(hdcScreen, left - 2, top - 2, right + 2, bottom + 2);
-                Rectangle(hdcScreen, left - 1, top - 1, right + 1, bottom + 1);
-
-                // Draw bold badge
-                HFONT hFont = CreateFontW(-13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-                HGDIOBJ hOldFont = hFont ? SelectObject(hdcScreen, hFont) : NULL;
-
-                SetBkMode(hdcScreen, OPAQUE);
-                SetBkColor(hdcScreen, RGB(220, 20, 20));
-                SetTextColor(hdcScreen, RGB(255, 255, 255));
-                const wchar_t* tagText = L" 目标水印 (即将清除) ";
-                int tagY = top - 20;
-                if (tagY < 2) tagY = bottom + 2;
-                TextOutW(hdcScreen, left - 2, tagY, tagText, (int)wcslen(tagText));
-
-                if (hOldFont) SelectObject(hdcScreen, hOldFont);
-                if (hFont) DeleteObject(hFont);
-                SelectObject(hdcScreen, hOldBrush);
-                SelectObject(hdcScreen, hOldPen);
-                DeleteObject(hRedPen);
-                ReleaseDC(hViewWnd, hdcScreen);
-            }
-            AVPageViewReleaseMachinePort(pageView, port);
-        }
-
         // Build detailed information message
         std::wstring msg = L"【已在页面上用红色矩形框标出选中的水印】\n\n";
         if (fp.type == kPDEImage) {
@@ -742,10 +685,6 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
             wipepdf::CleanResult cleanRes = wipepdf::WatermarkService::executePlan(pdDoc, g_State.candidates, opts);
 
             // Clear highlights and force refresh
-            if (hViewWnd) {
-                InvalidateRect(hViewWnd, NULL, TRUE);
-                UpdateWindow(hViewWnd);
-            }
             ClearHighlight(pageView);
 
             std::wstring finishMsg = L"水印清理完成！\n\n共成功清除 " + std::to_wstring(cleanRes.totalRemoved) + L" 处同款水印元素。\n页面已即时刷新。\n\n⚠️ 重要提示：\n";
@@ -757,10 +696,6 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
             return true;
         } else {
             // Cancelled: clear highlight and restore clean page
-            if (hViewWnd) {
-                InvalidateRect(hViewWnd, NULL, TRUE);
-                UpdateWindow(hViewWnd);
-            }
             ClearHighlight(pageView);
             return false;
         }
