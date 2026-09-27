@@ -45,82 +45,46 @@ static void ACCB1 MyPageViewDrawProc(AVPageView pageView, AVDevRect* updateRect,
     
     ASInt32 pageNum = AVPageViewGetPageNum(pageView);
 
-#if WIN_PLATFORM
-    WinPort port = (WinPort)AVPageViewAcquireMachinePort(pageView);
-    HDC hdc = port ? port->hDC : NULL;
-    HFONT hFont = NULL;
-    HGDIOBJ hOldFont = NULL;
-    if (hdc) {
-        hFont = CreateFontW(-12, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-        if (hFont) hOldFont = SelectObject(hdc, hFont);
-    }
-#endif
-
-    // Only draw on the page where the hit target element resides
-    if (g_State.hitPageIndex != pageNum) return;
-
-    ASFixedRect bbox = g_State.hitBBox;
-    AVDevRect devRect;
-    AVPageViewRectToDevice(pageView, &bbox, &devRect);
-
-    // Normalize device rectangle coordinates (left < right, top < bottom)
-    int left   = (std::min)((int)devRect.left, (int)devRect.right);
-    int right  = (std::max)((int)devRect.left, (int)devRect.right);
-    int top    = (std::min)((int)devRect.top, (int)devRect.bottom);
-    int bottom = (std::max)((int)devRect.top, (int)devRect.bottom);
-
-    // Ensure minimum 4x4 px size so thin lines don't disappear
-    if (right <= left) right = left + 4;
-    if (bottom <= top) bottom = top + 4;
-
-    // 1. Native Acrobat Outline rendering (reliable across Acrobat versions, stays pinned to PDF page)
+    // Native Acrobat outline color: Pure Red (1.0, 0, 0)
     PDColorValueRec acroColor;
     acroColor.space = PDDeviceRGB;
-    acroColor.value[0] = fixedOne; // Pure Red: 1.0
+    acroColor.value[0] = fixedOne;
     acroColor.value[1] = 0;
     acroColor.value[2] = 0;
     AVPageViewSetColor(pageView, &acroColor);
 
-    AVDevRect drawRect;
-    drawRect.left = (ASInt16)left;
-    drawRect.right = (ASInt16)right;
-    drawRect.top = (ASInt16)top;
-    drawRect.bottom = (ASInt16)bottom;
-    AVPageViewDrawRectOutline(pageView, &drawRect, 3, NULL, 0);
+    // Draw all watermark candidates on the currently displayed page (supports multi-page browsing)
+    for (size_t i = 0; i < g_State.candidates.size(); ++i) {
+        const auto& cand = g_State.candidates[i];
+        if (cand.pageIndex != pageNum) continue;
 
-#if WIN_PLATFORM
-    // 2. GDI offscreen HDC rendering: crisp solid border and "目标水印" badge
-    if (hdc) {
-        HPEN hPen = CreatePen(PS_SOLID, 3, RGB(255, 0, 0));
-        HGDIOBJ hOldPen = SelectObject(hdc, hPen);
-        HGDIOBJ hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        ASFixedRect bbox = cand.bbox;
+        AVDevRect devRect;
+        AVPageViewRectToDevice(pageView, &bbox, &devRect);
 
-        // Expand by 1px so the frame sits slightly outside the elements
-        Rectangle(hdc, left - 1, top - 1, right + 1, bottom + 1);
+        // Normalize device rectangle coordinates (left < right, top < bottom)
+        int left   = (std::min)((int)devRect.left, (int)devRect.right);
+        int right  = (std::max)((int)devRect.left, (int)devRect.right);
+        int top    = (std::min)((int)devRect.top, (int)devRect.bottom);
+        int bottom = (std::max)((int)devRect.top, (int)devRect.bottom);
 
-        const wchar_t* badge = L" 目标水印 ";
-        SetBkMode(hdc, OPAQUE);
-        SetBkColor(hdc, RGB(220, 20, 20));
-        SetTextColor(hdc, RGB(255, 255, 255));
-        int textY = top - 18;
-        if (textY < 2) textY = bottom + 2;
-        TextOutW(hdc, left - 1, textY, badge, (int)wcslen(badge));
+        // Ensure minimum 4x4 px size so thin lines don't disappear
+        if (right <= left) right = left + 4;
+        if (bottom <= top) bottom = top + 4;
 
-        SelectObject(hdc, hOldBrush);
-        SelectObject(hdc, hOldPen);
-        DeleteObject(hPen);
+        AVDevRect drawRect;
+        drawRect.left = (ASInt16)left;
+        drawRect.right = (ASInt16)right;
+        drawRect.top = (ASInt16)top;
+        drawRect.bottom = (ASInt16)bottom;
+
+        // Directly clicked target on primary page gets 3px border, other pages get 2px
+        bool isHitTarget = (cand.pageIndex == g_State.hitPageIndex &&
+                            std::fabs(ASFixedToFloat(cand.bbox.left) - ASFixedToFloat(g_State.hitBBox.left)) < 3.0f &&
+                            std::fabs(ASFixedToFloat(cand.bbox.bottom) - ASFixedToFloat(g_State.hitBBox.bottom)) < 3.0f);
+
+        AVPageViewDrawRectOutline(pageView, &drawRect, isHitTarget ? 3 : 2, NULL, 0);
     }
-#endif
-
-#if WIN_PLATFORM
-    if (hdc) {
-        if (hOldFont) SelectObject(hdc, hOldFont);
-        if (hFont) DeleteObject(hFont);
-        AVPageViewReleaseMachinePort(pageView, port);
-    }
-#endif
 }
 
 } // anonymous namespace
@@ -591,8 +555,8 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
         bool hitIncluded = false;
         for (const auto& c : candidates) {
             if (c.pageIndex == pageIndex &&
-                std::fabs(ASFixedToFloat(c.bbox.left) - ASFixedToFloat(hitPageBBox.left)) < 2.0f &&
-                std::fabs(ASFixedToFloat(c.bbox.bottom) - ASFixedToFloat(hitPageBBox.bottom)) < 2.0f) {
+                std::fabs(ASFixedToFloat(c.bbox.left) - ASFixedToFloat(hitPageBBox.left)) < 5.0f &&
+                std::fabs(ASFixedToFloat(c.bbox.bottom) - ASFixedToFloat(hitPageBBox.bottom)) < 5.0f) {
                 hitIncluded = true;
                 break;
             }
@@ -606,6 +570,26 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
             cHit.elemType = clickedType;
             candidates.insert(candidates.begin(), cHit);
         }
+
+        // Deduplicate overlapping candidate boxes on the same page (e.g. form container vs inner content)
+        std::vector<wipepdf::WatermarkCandidate> uniqueCands;
+        for (const auto& c : candidates) {
+            bool isDup = false;
+            for (const auto& u : uniqueCands) {
+                if (c.pageIndex == u.pageIndex) {
+                    float cx1 = ASFixedToFloat((c.bbox.left + c.bbox.right) / 2);
+                    float cy1 = ASFixedToFloat((c.bbox.bottom + c.bbox.top) / 2);
+                    float cx2 = ASFixedToFloat((u.bbox.left + u.bbox.right) / 2);
+                    float cy2 = ASFixedToFloat((u.bbox.bottom + u.bbox.top) / 2);
+                    if (std::fabs(cx1 - cx2) < 15.0f && std::fabs(cy1 - cy2) < 15.0f) {
+                        isDup = true;
+                        break;
+                    }
+                }
+            }
+            if (!isDup) uniqueCands.push_back(c);
+        }
+        candidates = uniqueCands;
 
         // Set highlight state and activate drawing proc
         g_State.active = true;
