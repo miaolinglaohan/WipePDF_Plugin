@@ -70,6 +70,15 @@ struct CleanOptions {
     };
 };
 
+struct WatermarkCandidate {
+    ASInt32 pageIndex = 0;
+    ASFixedRect bbox = {0,0,0,0};
+    bool selected = true;
+    std::string matchType;
+    std::string matchKeyword;
+    ASInt32 elemType = -1;
+};
+
 struct PageInspectResult {
     int totalElements = 0;
     int textElements = 0;
@@ -113,6 +122,8 @@ public:
     // Count how many elements would be removed (no modification), used to
     // preview the deletion scope before the user confirms.
     static CleanResult countDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
+        static std::vector<WatermarkCandidate> scanDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
+    static CleanResult executePlan(PDDoc pddoc, const std::vector<WatermarkCandidate>& plan, const CleanOptions &opts = CleanOptions());
     static PageInspectResult inspectPage(PDDoc pddoc, ASInt32 pageIndex, const CleanOptions &opts = CleanOptions());
     // True if the element is a marked-content Container tagged as a PDF
     // standard watermark (/Artifact + /Subtype /Watermark).
@@ -123,6 +134,9 @@ private:
     static CleanResult countPageContent(PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox);
     static CleanResult cleanContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox);
     static CleanResult countContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox);
+    static void scanContainer(ASInt32 pageIndex, PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox, std::vector<WatermarkCandidate>& outCandidates);
+    static CleanResult executeContainerPlan(ASInt32 pageIndex, PDEElement container, const std::vector<WatermarkCandidate>& plan, const CleanOptions &opts, const ASFixedRect &cropBox);
+
     static std::vector<ASInt32> getWatermarkTextRuns(PDEText text, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType, std::string &outMatchedKeyword);
     static bool isWatermarkPath(PDEPath path, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType);
     static bool isWatermarkImage(PDEImage img, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType);

@@ -298,7 +298,7 @@ CleanResult WatermarkService::countPageContent(PDEContent content, const CleanOp
         ASInt32 type = PDEObjectGetType((PDEObject)elem);
 
         if (watermarkOnly) {
-            if (type == kPDEContainer && isWatermarkMarkedContainer(elem)) {
+            if (type == kPDEContainer && WatermarkService::isWatermarkMarkedContainer(elem)) {
                 res.totalRemoved++;
                 res.removedTargetFingers++;
             }
@@ -307,7 +307,7 @@ CleanResult WatermarkService::countPageContent(PDEContent content, const CleanOp
 
         if (type == kPDEText) {
             std::string matchType, kw;
-            std::vector<ASInt32> runs = getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+            std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
             if (!runs.empty()) {
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
@@ -316,7 +316,7 @@ CleanResult WatermarkService::countPageContent(PDEContent content, const CleanOp
             }
         } else if (type == kPDEPath) {
             std::string matchType;
-            if (isWatermarkPath((PDEPath)elem, opts, cropBox, matchType)) {
+            if (WatermarkService::isWatermarkPath((PDEPath)elem, opts, cropBox, matchType)) {
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
                 else if (matchType == "Pattern") res.removedPatternPaths++;
@@ -324,14 +324,14 @@ CleanResult WatermarkService::countPageContent(PDEContent content, const CleanOp
             }
         } else if (type == kPDEImage) {
             std::string matchType;
-            if (isWatermarkImage((PDEImage)elem, opts, cropBox, matchType)) {
+            if (WatermarkService::isWatermarkImage((PDEImage)elem, opts, cropBox, matchType)) {
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
                 else if (matchType == "BottomStrip") res.removedBottomStrips++;
                 else res.removedImages++;
             }
         } else if (type == kPDEForm || type == kPDEContainer) {
-            if (type == kPDEContainer && isWatermarkMarkedContainer(elem)) {
+            if (type == kPDEContainer && WatermarkService::isWatermarkMarkedContainer(elem)) {
                 res.totalRemoved++;
                 res.removedTargetFingers++;
                 continue;
@@ -373,7 +373,7 @@ CleanResult WatermarkService::cleanPageContent(PDPage page, PDEContent content, 
 
         if (watermarkOnly) {
             // In watermark-only mode, only marked containers are removed.
-            if (type == kPDEContainer && isWatermarkMarkedContainer(elem)) {
+            if (type == kPDEContainer && WatermarkService::isWatermarkMarkedContainer(elem)) {
                 PDEContentRemoveElem(content, i);
                 res.totalRemoved++;
                 res.removedTargetFingers++;
@@ -383,7 +383,7 @@ CleanResult WatermarkService::cleanPageContent(PDPage page, PDEContent content, 
 
         if (type == kPDEText) {
             std::string matchType, kw;
-            std::vector<ASInt32> runs = getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+            std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
             if (!runs.empty()) {
                 // R01: Safely isolate and remove only the matched text runs.
                 for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
@@ -400,7 +400,7 @@ CleanResult WatermarkService::cleanPageContent(PDPage page, PDEContent content, 
             }
         } else if (type == kPDEPath) {
             std::string matchType;
-            if (isWatermarkPath((PDEPath)elem, opts, cropBox, matchType)) {
+            if (WatermarkService::isWatermarkPath((PDEPath)elem, opts, cropBox, matchType)) {
                 PDEContentRemoveElem(content, i);
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
@@ -409,7 +409,7 @@ CleanResult WatermarkService::cleanPageContent(PDPage page, PDEContent content, 
             }
         } else if (type == kPDEImage) {
             std::string matchType;
-            if (isWatermarkImage((PDEImage)elem, opts, cropBox, matchType)) {
+            if (WatermarkService::isWatermarkImage((PDEImage)elem, opts, cropBox, matchType)) {
                 PDEContentRemoveElem(content, i);
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
@@ -419,7 +419,7 @@ CleanResult WatermarkService::cleanPageContent(PDPage page, PDEContent content, 
         } else if (type == kPDEForm || type == kPDEContainer) {
             // A marked-content container tagged as a PDF standard watermark
             // (e.g. /Artifact /Subtype /Watermark) is removed as a whole.
-            if (type == kPDEContainer && isWatermarkMarkedContainer(elem)) {
+            if (type == kPDEContainer && WatermarkService::isWatermarkMarkedContainer(elem)) {
                 PDEContentRemoveElem(content, i);
                 res.totalRemoved++;
                 res.removedTargetFingers++;
@@ -460,7 +460,7 @@ CleanResult WatermarkService::cleanContainer(PDEElement container, const CleanOp
         ASInt32 type = PDEObjectGetType((PDEObject)elem);
         if (type == kPDEText) {
             std::string matchType, kw;
-            std::vector<ASInt32> runs = getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+            std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
             if (!runs.empty()) {
                 for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
                     PDETextRemove((PDEText)elem, kPDETextRun, *it, 1);
@@ -475,7 +475,7 @@ CleanResult WatermarkService::cleanContainer(PDEElement container, const CleanOp
             }
         } else if (type == kPDEPath) {
             std::string matchType;
-            if (isWatermarkPath((PDEPath)elem, opts, cropBox, matchType)) {
+            if (WatermarkService::isWatermarkPath((PDEPath)elem, opts, cropBox, matchType)) {
                 PDEContentRemoveElem(inner, i);
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
@@ -484,7 +484,7 @@ CleanResult WatermarkService::cleanContainer(PDEElement container, const CleanOp
             }
         } else if (type == kPDEImage) {
             std::string matchType;
-            if (isWatermarkImage((PDEImage)elem, opts, cropBox, matchType)) {
+            if (WatermarkService::isWatermarkImage((PDEImage)elem, opts, cropBox, matchType)) {
                 PDEContentRemoveElem(inner, i);
                 res.totalRemoved++;
                 if (matchType == "Target") res.removedTargetFingers++;
@@ -817,7 +817,7 @@ PageInspectResult WatermarkService::inspectPage(PDDoc pddoc, ASInt32 pageIndex, 
             if (type == kPDEText) {
                 res.textElements++;
                 std::string matchedType, kw;
-                std::vector<ASInt32> runs = getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchedType, kw);
+                std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchedType, kw);
                 if (!runs.empty()) {
                     if (matchedType == "Transparent") {
                         res.transparentTextCount++;
@@ -831,7 +831,7 @@ PageInspectResult WatermarkService::inspectPage(PDDoc pddoc, ASInt32 pageIndex, 
             } else if (type == kPDEPath) {
                 res.pathElements++;
                 std::string matchedType;
-                if (isWatermarkPath((PDEPath)elem, opts, cropBox, matchedType)) {
+                if (WatermarkService::isWatermarkPath((PDEPath)elem, opts, cropBox, matchedType)) {
                     res.patternFillCount++;
                 }
             } else if (type == kPDEImage) {
@@ -842,6 +842,272 @@ PageInspectResult WatermarkService::inspectPage(PDDoc pddoc, ASInt32 pageIndex, 
     }
 
     PDPageRelease(page);
+    return res;
+}
+
+
+
+
+void WatermarkService::scanContainer(ASInt32 pageIndex, PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox, std::vector<WatermarkCandidate>& outCandidates) {
+    PDEContent inner = NULL;
+    ASInt32 type = PDEObjectGetType((PDEObject)container);
+    if (type == kPDEForm) {
+        inner = PDEFormGetContent((PDEForm)container);
+    } else if (type == kPDEContainer) {
+        inner = PDEContainerGetContent((PDEContainer)container);
+    }
+    if (!inner) return;
+
+    ASInt32 numElems = PDEContentGetNumElems(inner);
+    for (ASInt32 i = 0; i < numElems; ++i) {
+        PDEElement elem = PDEContentGetElem(inner, i);
+        if (!elem) continue;
+        
+        ASInt32 elemType = PDEObjectGetType((PDEObject)elem);
+        std::string matchType, kw;
+        
+        bool matched = false;
+        if (elemType == kPDEText) {
+            std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+            matched = !runs.empty();
+        } else if (elemType == kPDEPath) {
+            matched = WatermarkService::isWatermarkPath((PDEPath)elem, opts, cropBox, matchType);
+        } else if (elemType == kPDEImage) {
+            matched = WatermarkService::isWatermarkImage((PDEImage)elem, opts, cropBox, matchType);
+        }
+
+        if (matched) {
+            ASFixedRect bbox;
+            PDEElementGetBBox(elem, &bbox);
+            WatermarkCandidate cand;
+            cand.pageIndex = pageIndex;
+            cand.bbox = bbox;
+            cand.selected = true;
+            cand.matchType = matchType;
+            cand.matchKeyword = kw;
+            cand.elemType = elemType;
+            outCandidates.push_back(cand);
+        }
+
+        if (elemType == kPDEContainer || elemType == kPDEForm) {
+            scanContainer(pageIndex, elem, opts, cropBox, outCandidates);
+        }
+    }
+}
+
+std::vector<WatermarkCandidate> WatermarkService::scanDocument(PDDoc pddoc, const CleanOptions &opts) {
+    std::vector<WatermarkCandidate> candidates;
+    if (!pddoc) return candidates;
+
+    ASInt32 numPages = PDDocGetNumPages(pddoc);
+    for (ASInt32 p = 0; p < numPages; ++p) {
+        PDPage page = PDDocAcquirePage(pddoc, p);
+        if (!page) continue;
+
+        ASFixedRect cropBox;
+        PDPageGetCropBox(page, &cropBox);
+
+        PDEContent content = PDPageAcquirePDEContent(page, gExtensionID);
+        if (content) {
+            ASInt32 numElems = PDEContentGetNumElems(content);
+            for (ASInt32 i = 0; i < numElems; ++i) {
+                PDEElement elem = PDEContentGetElem(content, i);
+                if (!elem) continue;
+                
+                ASInt32 elemType = PDEObjectGetType((PDEObject)elem);
+                std::string matchType, kw;
+                
+                bool watermarkOnly = opts.targetFingerprint.active && opts.targetFingerprint.isWatermarkMarked;
+                if (watermarkOnly) {
+                    if (elemType == kPDEContainer && WatermarkService::isWatermarkMarkedContainer(elem)) {
+                        ASFixedRect bbox;
+                        PDEElementGetBBox(elem, &bbox);
+                        WatermarkCandidate cand;
+                        cand.pageIndex = p;
+                        cand.bbox = bbox;
+                        cand.selected = true;
+                        cand.matchType = "Target";
+                        cand.elemType = kPDEContainer;
+                        candidates.push_back(cand);
+                    }
+                    continue;
+                }
+
+                bool matched = false;
+                if (elemType == kPDEText) {
+                    std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+                    matched = !runs.empty();
+                } else if (elemType == kPDEPath) {
+                    matched = WatermarkService::isWatermarkPath((PDEPath)elem, opts, cropBox, matchType);
+                } else if (elemType == kPDEImage) {
+                    matched = WatermarkService::isWatermarkImage((PDEImage)elem, opts, cropBox, matchType);
+                }
+
+                if (matched) {
+                    ASFixedRect bbox;
+                    PDEElementGetBBox(elem, &bbox);
+                    WatermarkCandidate cand;
+                    cand.pageIndex = p;
+                    cand.bbox = bbox;
+                    cand.selected = true;
+                    cand.matchType = matchType;
+                    cand.matchKeyword = kw;
+                    cand.elemType = elemType;
+                    candidates.push_back(cand);
+                }
+
+                if (elemType == kPDEContainer || elemType == kPDEForm) {
+                    scanContainer(p, elem, opts, cropBox, candidates);
+                }
+            }
+            PDPageReleasePDEContent(page, gExtensionID);
+        }
+        PDPageRelease(page);
+    }
+    return candidates;
+}
+
+CleanResult WatermarkService::executeContainerPlan(ASInt32 pageIndex, PDEElement container, const std::vector<WatermarkCandidate>& plan, const CleanOptions &opts, const ASFixedRect &cropBox) {
+    CleanResult res;
+    PDEContent inner = NULL;
+    ASInt32 type = PDEObjectGetType((PDEObject)container);
+    if (type == kPDEForm) {
+        inner = PDEFormGetContent((PDEForm)container);
+    } else if (type == kPDEContainer) {
+        inner = PDEContainerGetContent((PDEContainer)container);
+    }
+    if (!inner) return res;
+
+    ASInt32 numElems = PDEContentGetNumElems(inner);
+    for (ASInt32 i = numElems - 1; i >= 0; --i) {
+        PDEElement elem = PDEContentGetElem(inner, i);
+        if (!elem) continue;
+        
+        ASInt32 elemType = PDEObjectGetType((PDEObject)elem);
+        
+        if (elemType == kPDEContainer || elemType == kPDEForm) {
+            CleanResult childRes = executeContainerPlan(pageIndex, elem, plan, opts, cropBox);
+            res.add(childRes);
+        }
+
+        ASFixedRect bbox;
+        PDEElementGetBBox(elem, &bbox);
+        
+        for (const auto& cand : plan) {
+            if (cand.selected && cand.pageIndex == pageIndex && cand.elemType == elemType) {
+                // Match bounding box precisely
+                if (std::fabs(ASFixedToFloat(cand.bbox.left) - ASFixedToFloat(bbox.left)) < 1.0f &&
+                    std::fabs(ASFixedToFloat(cand.bbox.bottom) - ASFixedToFloat(bbox.bottom)) < 1.0f &&
+                    std::fabs(ASFixedToFloat(cand.bbox.right) - ASFixedToFloat(bbox.right)) < 1.0f &&
+                    std::fabs(ASFixedToFloat(cand.bbox.top) - ASFixedToFloat(bbox.top)) < 1.0f) {
+                    
+                    std::string matchType, kw;
+                    if (elemType == kPDEText) {
+                        std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+                        if (!runs.empty()) {
+                            for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+                                PDETextRemove((PDEText)elem, kPDETextRun, *it, 1);
+                            }
+                            if (PDETextGetNumRuns((PDEText)elem) == 0) {
+                                PDEContentRemoveElem(inner, i);
+                            }
+                            res.totalRemoved++;
+                        }
+                    } else {
+                        PDEContentRemoveElem(inner, i);
+                        res.totalRemoved++;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    
+    if (res.totalRemoved > 0) {
+        if (type == kPDEForm) PDEFormSetContent((PDEForm)container, inner);
+        else PDEContainerSetContent((PDEContainer)container, inner);
+    }
+    return res;
+}
+
+CleanResult WatermarkService::executePlan(PDDoc pddoc, const std::vector<WatermarkCandidate>& plan, const CleanOptions &opts) {
+    CleanResult res;
+    if (!pddoc) return res;
+
+    ASInt32 numPages = PDDocGetNumPages(pddoc);
+    for (ASInt32 p = 0; p < numPages; ++p) {
+        PDPage page = PDDocAcquirePage(pddoc, p);
+        if (!page) continue;
+
+        ASFixedRect cropBox;
+        PDPageGetCropBox(page, &cropBox);
+
+        PDEContent content = PDPageAcquirePDEContent(page, gExtensionID);
+        if (content) {
+            ASInt32 numElems = PDEContentGetNumElems(content);
+            bool changed = false;
+            
+            for (ASInt32 i = numElems - 1; i >= 0; --i) {
+                PDEElement elem = PDEContentGetElem(content, i);
+                if (!elem) continue;
+                
+                ASInt32 elemType = PDEObjectGetType((PDEObject)elem);
+                
+                if (elemType == kPDEContainer || elemType == kPDEForm) {
+                    CleanResult childRes = executeContainerPlan(p, elem, plan, opts, cropBox);
+                    if (childRes.totalRemoved > 0) {
+                        res.add(childRes);
+                        changed = true;
+                    }
+                }
+
+                ASFixedRect bbox;
+                PDEElementGetBBox(elem, &bbox);
+                
+                for (const auto& cand : plan) {
+                    if (cand.selected && cand.pageIndex == p && cand.elemType == elemType) {
+                        if (std::fabs(ASFixedToFloat(cand.bbox.left) - ASFixedToFloat(bbox.left)) < 1.0f &&
+                            std::fabs(ASFixedToFloat(cand.bbox.bottom) - ASFixedToFloat(bbox.bottom)) < 1.0f &&
+                            std::fabs(ASFixedToFloat(cand.bbox.right) - ASFixedToFloat(bbox.right)) < 1.0f &&
+                            std::fabs(ASFixedToFloat(cand.bbox.top) - ASFixedToFloat(bbox.top)) < 1.0f) {
+                            
+                            std::string matchType, kw;
+                            if (elemType == kPDEText) {
+                                std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
+                                if (!runs.empty()) {
+                                    for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+                                        PDETextRemove((PDEText)elem, kPDETextRun, *it, 1);
+                                    }
+                                    if (PDETextGetNumRuns((PDEText)elem) == 0) {
+                                        PDEContentRemoveElem(content, i);
+                                    }
+                                    res.totalRemoved++;
+                                    changed = true;
+                                }
+                            } else if (elemType == kPDEContainer && opts.targetFingerprint.active && opts.targetFingerprint.isWatermarkMarked) {
+                                PDEContentRemoveElem(content, i);
+                                res.totalRemoved++;
+                                res.removedTargetFingers++;
+                                changed = true;
+                            } else {
+                                PDEContentRemoveElem(content, i);
+                                res.totalRemoved++;
+                                changed = true;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if (changed) {
+                PDPageSetPDEContent(page, gExtensionID);
+                PDPageNotifyContentsDidChange(page);
+            } else {
+                PDPageReleasePDEContent(page, gExtensionID);
+            }
+        }
+        PDPageRelease(page);
+    }
     return res;
 }
 

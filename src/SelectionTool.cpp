@@ -1,5 +1,200 @@
 ﻿#include "SelectionTool.h"
 #include "WatermarkService.h"
+
+#include <vector>
+#include <CommCtrl.h>
+
+extern std::vector<wipepdf::WatermarkCandidate> g_Candidates;
+std::vector<wipepdf::WatermarkCandidate> g_Candidates;
+int g_CurrentCandidateIndex = 0;
+HWND g_hPanel = NULL;
+AVPageViewDrawProc g_DrawProc = NULL;
+PDDoc g_CurrentPDDoc = NULL;
+wipepdf::CleanOptions g_CurrentOpts;
+
+static void ACCB1 MyPageViewDrawProc(AVPageView pageView, AVDevRect* updateRect, void* data) {
+    if (g_Candidates.empty()) return;
+    
+    ASInt32 pageNum = AVPageViewGetPageNum(pageView);
+    for (size_t i = 0; i < g_Candidates.size(); ++i) {
+        if (g_Candidates[i].pageIndex != pageNum) continue;
+        
+        ASFixedRect bbox = g_Candidates[i].bbox;
+        AVDevRect devRect;
+        AVPageViewRectToDevice(pageView, &bbox, &devRect);
+        
+        // Normalize devRect just in case
+        if (devRect.top > devRect.bottom) {
+            ASInt16 tmp = devRect.top; devRect.top = devRect.bottom; devRect.bottom = tmp;
+        }
+        if (devRect.left > devRect.right) {
+            ASInt16 tmp = devRect.left; devRect.left = devRect.right; devRect.right = tmp;
+        }
+        
+        // Invert to draw highlight
+        bool isCurrent = (i == g_CurrentCandidateIndex);
+        if (g_Candidates[i].selected) {
+            AVPageViewInvertRectOutline(pageView, &devRect);
+            if (isCurrent) {
+                // Draw thicker outline by inverting surrounding pixels
+                devRect.top--; devRect.bottom++; devRect.left--; devRect.right++;
+                AVPageViewInvertRectOutline(pageView, &devRect);
+                devRect.top--; devRect.bottom++; devRect.left--; devRect.right++;
+                AVPageViewInvertRectOutline(pageView, &devRect);
+            }
+        }
+    }
+}
+
+#pragma pack(push, 1)
+struct DLG_TEMPLATE {
+    DLGTEMPLATE header;
+    WORD menu;
+    WORD class_name;
+    WORD title;
+};
+#pragma pack(pop)
+
+static INT_PTR CALLBACK PanelProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+        case WM_INITDIALOG:
+            SetWindowTextW(hwndDlg, L"WipePDF 预览");
+            CreateWindowW(L"BUTTON", L"上一处", WS_VISIBLE | WS_CHILD, 10, 10, 80, 25, hwndDlg, (HMENU)101, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"下一处", WS_VISIBLE | WS_CHILD, 100, 10, 80, 25, hwndDlg, (HMENU)102, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"排除此项", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, 10, 45, 100, 25, hwndDlg, (HMENU)103, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"确认删除", WS_VISIBLE | WS_CHILD, 10, 80, 80, 25, hwndDlg, (HMENU)104, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"取消退出", WS_VISIBLE | WS_CHILD, 100, 80, 80, 25, hwndDlg, (HMENU)105, NULL, NULL);
+            return TRUE;
+        case WM_COMMAND: {
+            int wmId = LOWORD(wParam);
+            if (wmId == 105) { // Cancel
+                DestroyWindow(hwndDlg);
+            } else if (wmId == 104) { // Execute
+                if (g_CurrentPDDoc) {
+                    std::wstring backupPath;
+                    wchar_t tempDir[MAX_PATH] = {0};
+                    if (GetTempPathW(MAX_PATH, tempDir) > 0) {
+                        backupPath = std::wstring(tempDir) + L"WipePDF_backup_" + std::to_wstring(GetTickCount64()) + L".pdf";
+                        ASText diText = ASTextFromUnicode((const ASUTF16Val *)backupPath.c_str(), kUTF16HostEndian);
+                        if (diText) {
+                            ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
+                            ASTextDestroy(diText);
+                            if (backupPathName) {
+                                PDDocSave(g_CurrentPDDoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
+                                ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
+                            } else {
+                                backupPath.clear();
+                            }
+                        } else {
+                            backupPath.clear();
+                        }
+                    } else {
+                        backupPath.clear();
+                    }
+
+                    wipepdf::CleanResult cleanRes = wipepdf::WatermarkService::executePlan(g_CurrentPDDoc, g_Candidates, g_CurrentOpts);
+                    
+                    std::wstring finishMsg = L"清理完毕！共删除 " + std::to_wstring(cleanRes.totalRemoved) + L" 处。\n";
+                    if (!backupPath.empty()) {
+                        finishMsg += L"备份已存至: " + backupPath + L"\n";
+                    }
+                    MessageBoxW(hwndDlg, finishMsg.c_str(), L"WipePDF", MB_OK);
+                }
+                DestroyWindow(hwndDlg);
+            } else if (wmId == 101) { // Prev
+                if (g_CurrentCandidateIndex > 0) {
+                    g_CurrentCandidateIndex--;
+                    SendDlgItemMessage(hwndDlg, 103, BM_SETCHECK, g_Candidates[g_CurrentCandidateIndex].selected ? BST_UNCHECKED : BST_CHECKED, 0);
+                    AVDoc avDoc = AVAppGetActiveDoc();
+                    if (avDoc) {
+                        AVPageView pageView = AVDocGetPageView(avDoc);
+                        if (pageView) {
+                            AVPageViewGoTo(pageView, g_Candidates[g_CurrentCandidateIndex].pageIndex);
+                            AVPageViewDrawNow(pageView);
+                        }
+                    }
+                }
+            } else if (wmId == 102) { // Next
+                if (g_CurrentCandidateIndex < g_Candidates.size() - 1) {
+                    g_CurrentCandidateIndex++;
+                    SendDlgItemMessage(hwndDlg, 103, BM_SETCHECK, g_Candidates[g_CurrentCandidateIndex].selected ? BST_UNCHECKED : BST_CHECKED, 0);
+                    AVDoc avDoc = AVAppGetActiveDoc();
+                    if (avDoc) {
+                        AVPageView pageView = AVDocGetPageView(avDoc);
+                        if (pageView) {
+                            AVPageViewGoTo(pageView, g_Candidates[g_CurrentCandidateIndex].pageIndex);
+                            AVPageViewDrawNow(pageView);
+                        }
+                    }
+                }
+            } else if (wmId == 103) { // Exclude checkbox
+                bool isChecked = SendDlgItemMessage(hwndDlg, 103, BM_GETCHECK, 0, 0);
+                if (g_CurrentCandidateIndex >= 0 && g_CurrentCandidateIndex < g_Candidates.size()) {
+                    g_Candidates[g_CurrentCandidateIndex].selected = !isChecked;
+                    AVDoc avDoc = AVAppGetActiveDoc();
+                    if (avDoc) {
+                        AVPageView pageView = AVDocGetPageView(avDoc);
+                        if (pageView) AVPageViewDrawNow(pageView);
+                    }
+                }
+            }
+            return TRUE;
+        }
+        case WM_DESTROY:
+            if (g_DrawProc) {
+                AVAppUnregisterForPageViewDrawingEx(g_DrawProc, NULL);
+                g_DrawProc = NULL;
+            }
+            g_Candidates.clear();
+            g_CurrentPDDoc = NULL;
+            g_hPanel = NULL;
+            // Force redraw to clear highlights
+            AVDoc avDoc = AVAppGetActiveDoc();
+            if (avDoc) {
+                AVPageView pageView = AVDocGetPageView(avDoc);
+                if (pageView) AVPageViewDrawNow(pageView);
+            }
+            break;
+    }
+    return FALSE;
+}
+
+static void ShowPreviewPanel(PDDoc pdDoc, const wipepdf::CleanOptions& opts) {
+    g_CurrentPDDoc = pdDoc;
+    g_CurrentOpts = opts;
+    g_Candidates = wipepdf::WatermarkService::scanDocument(pdDoc, opts);
+    g_CurrentCandidateIndex = 0;
+    
+    if (g_Candidates.empty()) {
+        MessageBoxW(NULL, L"未找到更多相似水印。", L"WipePDF", MB_OK);
+        return;
+    }
+
+    if (!g_DrawProc) {
+        g_DrawProc = ASCallbackCreateProto(AVPageViewDrawProc, MyPageViewDrawProc);
+        AVAppRegisterForPageViewDrawing(g_DrawProc, NULL);
+    }
+    
+    if (!g_hPanel) {
+        DLG_TEMPLATE tpl = {0};
+        tpl.header.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE | DS_MODALFRAME;
+        tpl.header.cx = 200;
+        tpl.header.cy = 150;
+        g_hPanel = CreateDialogIndirectParamW(NULL, (LPCDLGTEMPLATE)&tpl, NULL, PanelProc, 0);
+    } else {
+        SetForegroundWindow(g_hPanel);
+    }
+    
+    AVDoc avDoc = AVAppGetActiveDoc();
+    if (avDoc) {
+        AVPageView pageView = AVDocGetPageView(avDoc);
+        if (pageView) {
+            AVPageViewGoTo(pageView, g_Candidates[0].pageIndex);
+            AVPageViewDrawNow(pageView);
+        }
+    }
+}
+
 #include <string>
 #include <cstdio>
 
@@ -487,58 +682,9 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
             AVDoc avDoc = AVAppGetActiveDoc();
             PDDoc pdDoc = avDoc ? AVDocGetPDDoc(avDoc) : NULL;
             if (pdDoc) {
-                CleanResult countRes = WatermarkService::countDocument(pdDoc, opts);
-                if (countRes.totalRemoved > 0) {
-                    std::wstring previewMsg = L"检测到同款特征。\n即将在当前文档中全局清除 " + 
-                                              std::to_wstring(countRes.totalRemoved) + 
-                                              L" 处此类元素，是否确认？";
-                    int proceed = MessageBoxW(NULL, previewMsg.c_str(), L"WipePDF 预览确认", MB_YESNO | MB_ICONQUESTION);
-                    if (proceed != IDYES) confirmed = false;
-                } else {
-                    MessageBoxW(NULL, L"未在文档中找到更多同款水印元素。", L"WipePDF 提示", MB_OK | MB_ICONINFORMATION);
-                    confirmed = false;
-                }
+                ShowPreviewPanel(pdDoc, opts);
+                return true;
             }
-        }
-
-        if (confirmed) {
-            // --- Safety backup: save a full copy of the document before
-            //     modifying it, so an accidental deletion can be recovered
-            //     even if Acrobat auto-saves the changes over the original.
-            std::wstring backupPath;
-            AVDoc avDoc = AVAppGetActiveDoc();
-            PDDoc pdDoc = avDoc ? AVDocGetPDDoc(avDoc) : NULL;
-            if (pdDoc) {
-                wchar_t tempDir[MAX_PATH] = {0};
-                if (GetTempPathW(MAX_PATH, tempDir) > 0) {
-                    backupPath = std::wstring(tempDir) + L"WipePDF_backup_" + std::to_wstring(GetTickCount64()) + L".pdf";
-                    ASText diText = ASTextFromUnicode((const ASUTF16Val *)backupPath.c_str(), kUTF16HostEndian);
-                    if (diText) {
-                        ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
-                        ASTextDestroy(diText);
-                        if (backupPathName) {
-                            PDDocSave(pdDoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
-                            ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
-                        } else {
-                            backupPath.clear();
-                        }
-                    } else {
-                        backupPath.clear();
-                    }
-                } else {
-                    backupPath.clear();
-                }
-            }
-
-            CleanResult cleanRes = WatermarkService::cleanActiveDocument(opts);
-            
-            std::wstring finishMsg = L"水印清理完成！\n\n共成功清除 " + std::to_wstring(cleanRes.totalRemoved) + L" 处同款水印元素。\n页面已即时刷新。\n\n⚠️ 重要提示：\n";
-            if (!backupPath.empty()) {
-                finishMsg += L"  - 操作前已自动备份原文档到：\n    " + backupPath + L"\n    如误删可用该文件恢复。\n";
-            }
-            finishMsg += L"  - 删除会直接修改当前文档，Acrobat 可能在关闭时自动保存覆盖原文件。\n    如需保留，请立即按 Ctrl+S 另存，或先另存一份副本。";
-            MessageBoxW(NULL, finishMsg.c_str(), L"WipePDF 水印清理成功", MB_OK | MB_ICONINFORMATION);
-            return true;
         }
     } else {
         MessageBoxW(NULL, L"未找到有效的水印元素。\n请确认点击的 PDF 元素存在且未被删除。", L"WipePDF 提示", MB_OK | MB_ICONWARNING);
