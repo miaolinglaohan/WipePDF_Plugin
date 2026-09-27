@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "PluginInit.h"
 #include <string>
 #include <vector>
@@ -72,7 +72,8 @@ struct CleanOptions {
 
 struct WatermarkCandidate {
     ASInt32 pageIndex = 0;
-    ASFixedRect bbox = {0,0,0,0};
+    ASFixedRect bbox = {0,0,0,0};      // Page-space bbox for view highlight
+    ASFixedRect localBBox = {0,0,0,0}; // Container-local bbox for precise deletion
     bool selected = true;
     std::string matchType;
     std::string matchKeyword;

@@ -24,17 +24,18 @@ static void ClearHighlight(AVPageView pageView = NULL) {
     g_State.candidates.clear();
     g_State.pddoc = NULL;
     g_State.hitPageIndex = -1;
-    if (g_DrawProc) {
-        AVAppUnregisterForPageViewDrawingEx(g_DrawProc, NULL);
-        g_DrawProc = NULL;
-    }
+
     if (pageView) {
+        AVPageViewInvalidateRect(pageView, NULL);
         AVPageViewDrawNow(pageView);
     } else {
         AVDoc avDoc = AVAppGetActiveDoc();
         if (avDoc) {
             AVPageView pv = AVDocGetPageView(avDoc);
-            if (pv) AVPageViewDrawNow(pv);
+            if (pv) {
+                AVPageViewInvalidateRect(pv, NULL);
+                AVPageViewDrawNow(pv);
+            }
         }
     }
 }
@@ -190,9 +191,19 @@ void SelectionTool::RegisterTool() {
     // A tool must be registered with the viewer before it can be activated.
     // After this call the structure is owned by Acrobat and must not be freed.
     AVAppRegisterTool(gSelectionTool);
+
+    // Register drawing callback once globally so it is always active in the viewer render loop
+    if (!g_DrawProc) {
+        g_DrawProc = ASCallbackCreateProto(AVPageViewDrawProc, MyPageViewDrawProc);
+        AVAppRegisterForPageViewDrawing(g_DrawProc, NULL);
+    }
 }
 
 void SelectionTool::UnregisterTool() {
+    if (g_DrawProc) {
+        AVAppUnregisterForPageViewDrawingEx(g_DrawProc, NULL);
+        g_DrawProc = NULL;
+    }
     // The registered tool structure is owned by Acrobat; do not free it here.
     gSelectionTool = NULL;
 }
@@ -613,13 +624,56 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
         g_State.hitBBox = hitPageBBox;
         g_State.candidates = candidates;
 
-        if (!g_DrawProc) {
-            g_DrawProc = ASCallbackCreateProto(AVPageViewDrawProc, MyPageViewDrawProc);
-            AVAppRegisterForPageViewDrawing(g_DrawProc, NULL);
-        }
-
-        // Immediately refresh page view so red highlight appears ON PAGE before dialog
+        // 1. Invalidate Acrobat viewer and force immediate redraw
+        AVPageViewInvalidateRect(pageView, NULL);
         AVPageViewDrawNow(pageView);
+
+        // 2. Direct screen canvas draw on AVPageView window (guarantees instant visual outline on screen)
+        WinPort port = (WinPort)AVPageViewAcquireMachinePort(pageView);
+        HWND hViewWnd = port ? port->hWnd : NULL;
+        if (hViewWnd) {
+            AVDevRect devRect;
+            AVPageViewRectToDevice(pageView, &hitPageBBox, &devRect);
+            int left   = (std::min)((int)devRect.left, (int)devRect.right);
+            int right  = (std::max)((int)devRect.left, (int)devRect.right);
+            int top    = (std::min)((int)devRect.top, (int)devRect.bottom);
+            int bottom = (std::max)((int)devRect.top, (int)devRect.bottom);
+            if (right <= left) right = left + 4;
+            if (bottom <= top) bottom = top + 4;
+
+            HDC hdcScreen = GetDC(hViewWnd);
+            if (hdcScreen) {
+                HPEN hRedPen = CreatePen(PS_SOLID, 4, RGB(255, 0, 0));
+                HGDIOBJ hOldPen = SelectObject(hdcScreen, hRedPen);
+                HGDIOBJ hOldBrush = SelectObject(hdcScreen, GetStockObject(NULL_BRUSH));
+
+                // Draw solid red 4px box
+                Rectangle(hdcScreen, left - 2, top - 2, right + 2, bottom + 2);
+                Rectangle(hdcScreen, left - 1, top - 1, right + 1, bottom + 1);
+
+                // Draw bold badge
+                HFONT hFont = CreateFontW(-13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                          DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
+                HGDIOBJ hOldFont = hFont ? SelectObject(hdcScreen, hFont) : NULL;
+
+                SetBkMode(hdcScreen, OPAQUE);
+                SetBkColor(hdcScreen, RGB(220, 20, 20));
+                SetTextColor(hdcScreen, RGB(255, 255, 255));
+                const wchar_t* tagText = L" 目标水印 (即将清除) ";
+                int tagY = top - 20;
+                if (tagY < 2) tagY = bottom + 2;
+                TextOutW(hdcScreen, left - 2, tagY, tagText, (int)wcslen(tagText));
+
+                if (hOldFont) SelectObject(hdcScreen, hOldFont);
+                if (hFont) DeleteObject(hFont);
+                SelectObject(hdcScreen, hOldBrush);
+                SelectObject(hdcScreen, hOldPen);
+                DeleteObject(hRedPen);
+                ReleaseDC(hViewWnd, hdcScreen);
+            }
+            AVPageViewReleaseMachinePort(pageView, port);
+        }
 
         // Build detailed information message
         std::wstring msg = L"【已在页面上用红色矩形框标出选中的水印】\n\n";
@@ -688,6 +742,10 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
             wipepdf::CleanResult cleanRes = wipepdf::WatermarkService::executePlan(pdDoc, g_State.candidates, opts);
 
             // Clear highlights and force refresh
+            if (hViewWnd) {
+                InvalidateRect(hViewWnd, NULL, TRUE);
+                UpdateWindow(hViewWnd);
+            }
             ClearHighlight(pageView);
 
             std::wstring finishMsg = L"水印清理完成！\n\n共成功清除 " + std::to_wstring(cleanRes.totalRemoved) + L" 处同款水印元素。\n页面已即时刷新。\n\n⚠️ 重要提示：\n";
@@ -699,6 +757,10 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
             return true;
         } else {
             // Cancelled: clear highlight and restore clean page
+            if (hViewWnd) {
+                InvalidateRect(hViewWnd, NULL, TRUE);
+                UpdateWindow(hViewWnd);
+            }
             ClearHighlight(pageView);
             return false;
         }

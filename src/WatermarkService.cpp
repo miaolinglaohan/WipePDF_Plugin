@@ -1,4 +1,4 @@
-﻿#include "WatermarkService.h"
+#include "WatermarkService.h"
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -877,11 +877,16 @@ void WatermarkService::scanContainer(ASInt32 pageIndex, PDEElement container, co
         }
 
         if (matched) {
-            ASFixedRect bbox;
-            PDEElementGetBBox(elem, &bbox);
+            ASFixedRect localBBox;
+            PDEElementGetBBox(elem, &localBBox);
+            ASFixedRect pageBBox = localBBox;
+            if (opts.targetFingerprint.active && opts.targetFingerprint.inForm) {
+                PageSpaceBBox(opts.targetFingerprint, localBBox, pageBBox);
+            }
             WatermarkCandidate cand;
             cand.pageIndex = pageIndex;
-            cand.bbox = bbox;
+            cand.bbox = pageBBox;
+            cand.localBBox = localBBox;
             cand.selected = true;
             cand.matchType = matchType;
             cand.matchKeyword = kw;
@@ -995,11 +1000,16 @@ CleanResult WatermarkService::executeContainerPlan(ASInt32 pageIndex, PDEElement
         
         for (const auto& cand : plan) {
             if (cand.selected && cand.pageIndex == pageIndex && cand.elemType == elemType) {
-                // Match bounding box precisely
-                if (std::fabs(ASFixedToFloat(cand.bbox.left) - ASFixedToFloat(bbox.left)) < 1.0f &&
-                    std::fabs(ASFixedToFloat(cand.bbox.bottom) - ASFixedToFloat(bbox.bottom)) < 1.0f &&
-                    std::fabs(ASFixedToFloat(cand.bbox.right) - ASFixedToFloat(bbox.right)) < 1.0f &&
-                    std::fabs(ASFixedToFloat(cand.bbox.top) - ASFixedToFloat(bbox.top)) < 1.0f) {
+                // Match bounding box (try localBBox first for containers, or cand.bbox)
+                bool matchLocal = (std::fabs(ASFixedToFloat(cand.localBBox.left) - ASFixedToFloat(bbox.left)) < 1.0f &&
+                                   std::fabs(ASFixedToFloat(cand.localBBox.bottom) - ASFixedToFloat(bbox.bottom)) < 1.0f &&
+                                   std::fabs(ASFixedToFloat(cand.localBBox.right) - ASFixedToFloat(bbox.right)) < 1.0f &&
+                                   std::fabs(ASFixedToFloat(cand.localBBox.top) - ASFixedToFloat(bbox.top)) < 1.0f);
+                bool matchDirect = (std::fabs(ASFixedToFloat(cand.bbox.left) - ASFixedToFloat(bbox.left)) < 1.0f &&
+                                    std::fabs(ASFixedToFloat(cand.bbox.bottom) - ASFixedToFloat(bbox.bottom)) < 1.0f &&
+                                    std::fabs(ASFixedToFloat(cand.bbox.right) - ASFixedToFloat(bbox.right)) < 1.0f &&
+                                    std::fabs(ASFixedToFloat(cand.bbox.top) - ASFixedToFloat(bbox.top)) < 1.0f);
+                if (matchLocal || matchDirect) {
                     
                     std::string matchType, kw;
                     if (elemType == kPDEText) {
