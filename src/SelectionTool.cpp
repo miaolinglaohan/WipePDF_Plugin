@@ -1,199 +1,138 @@
-﻿#include "SelectionTool.h"
+#include "SelectionTool.h"
 #include "WatermarkService.h"
 
 #include <vector>
-#include <CommCtrl.h>
+#include <string>
+#include <cmath>
+#include <algorithm>
 
-extern std::vector<wipepdf::WatermarkCandidate> g_Candidates;
-std::vector<wipepdf::WatermarkCandidate> g_Candidates;
-int g_CurrentCandidateIndex = 0;
-HWND g_hPanel = NULL;
-AVPageViewDrawProc g_DrawProc = NULL;
-PDDoc g_CurrentPDDoc = NULL;
-wipepdf::CleanOptions g_CurrentOpts;
+namespace {
+
+struct HighlightState {
+    bool active = false;
+    PDDoc pddoc = NULL;
+    ASInt32 hitPageIndex = -1;
+    ASFixedRect hitBBox = {0, 0, 0, 0};
+    std::vector<wipepdf::WatermarkCandidate> candidates;
+};
+
+static HighlightState g_State;
+static AVPageViewDrawProc g_DrawProc = NULL;
+
+static void ClearHighlight(AVPageView pageView = NULL) {
+    g_State.active = false;
+    g_State.candidates.clear();
+    g_State.pddoc = NULL;
+    g_State.hitPageIndex = -1;
+    if (g_DrawProc) {
+        AVAppUnregisterForPageViewDrawingEx(g_DrawProc, NULL);
+        g_DrawProc = NULL;
+    }
+    if (pageView) {
+        AVPageViewDrawNow(pageView);
+    } else {
+        AVDoc avDoc = AVAppGetActiveDoc();
+        if (avDoc) {
+            AVPageView pv = AVDocGetPageView(avDoc);
+            if (pv) AVPageViewDrawNow(pv);
+        }
+    }
+}
 
 static void ACCB1 MyPageViewDrawProc(AVPageView pageView, AVDevRect* updateRect, void* data) {
-    if (g_Candidates.empty()) return;
+    if (!g_State.active || g_State.candidates.empty()) return;
     
     ASInt32 pageNum = AVPageViewGetPageNum(pageView);
-    for (size_t i = 0; i < g_Candidates.size(); ++i) {
-        if (g_Candidates[i].pageIndex != pageNum) continue;
-        
-        ASFixedRect bbox = g_Candidates[i].bbox;
+
+#if WIN_PLATFORM
+    WinPort port = (WinPort)AVPageViewAcquireMachinePort(pageView);
+    HDC hdc = port ? port->hDC : NULL;
+    HFONT hFont = NULL;
+    HGDIOBJ hOldFont = NULL;
+    if (hdc) {
+        hFont = CreateFontW(-12, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
+        if (hFont) hOldFont = SelectObject(hdc, hFont);
+    }
+#endif
+
+    for (size_t i = 0; i < g_State.candidates.size(); ++i) {
+        const auto& cand = g_State.candidates[i];
+        if (cand.pageIndex != pageNum) continue;
+
+        ASFixedRect bbox = cand.bbox;
         AVDevRect devRect;
         AVPageViewRectToDevice(pageView, &bbox, &devRect);
-        
-        // Normalize devRect just in case
-        if (devRect.top > devRect.bottom) {
-            ASInt16 tmp = devRect.top; devRect.top = devRect.bottom; devRect.bottom = tmp;
-        }
-        if (devRect.left > devRect.right) {
-            ASInt16 tmp = devRect.left; devRect.left = devRect.right; devRect.right = tmp;
-        }
-        
-        // Invert to draw highlight
-        bool isCurrent = (i == g_CurrentCandidateIndex);
-        if (g_Candidates[i].selected) {
-            AVPageViewInvertRectOutline(pageView, &devRect);
-            if (isCurrent) {
-                // Draw thicker outline by inverting surrounding pixels
-                devRect.top--; devRect.bottom++; devRect.left--; devRect.right++;
-                AVPageViewInvertRectOutline(pageView, &devRect);
-                devRect.top--; devRect.bottom++; devRect.left--; devRect.right++;
-                AVPageViewInvertRectOutline(pageView, &devRect);
+
+        // Normalize device rectangle coordinates (left < right, top < bottom)
+        int left   = (std::min)((int)devRect.left, (int)devRect.right);
+        int right  = (std::max)((int)devRect.left, (int)devRect.right);
+        int top    = (std::min)((int)devRect.top, (int)devRect.bottom);
+        int bottom = (std::max)((int)devRect.top, (int)devRect.bottom);
+
+        // Ensure minimum 4x4 px size so thin lines don't disappear
+        if (right <= left) right = left + 4;
+        if (bottom <= top) bottom = top + 4;
+
+        // Is this the primary element the user directly clicked on?
+        bool isHitElem = (cand.pageIndex == g_State.hitPageIndex &&
+                          std::fabs(ASFixedToFloat(cand.bbox.left) - ASFixedToFloat(g_State.hitBBox.left)) < 2.0f &&
+                          std::fabs(ASFixedToFloat(cand.bbox.bottom) - ASFixedToFloat(g_State.hitBBox.bottom)) < 2.0f);
+
+        // 1. Native Acrobat Outline rendering (reliable across Acrobat versions)
+        PDColorValueRec acroColor;
+        acroColor.space = PDDeviceRGB;
+        acroColor.value[0] = fixedOne; // Red: 1.0
+        acroColor.value[1] = isHitElem ? 0 : ASFloatToFixed(0.35f); // Hit: pure red, others: orange-red
+        acroColor.value[2] = 0;
+        AVPageViewSetColor(pageView, &acroColor);
+
+        AVDevRect drawRect;
+        drawRect.left = (ASInt16)left;
+        drawRect.right = (ASInt16)right;
+        drawRect.top = (ASInt16)top;
+        drawRect.bottom = (ASInt16)bottom;
+        AVPageViewDrawRectOutline(pageView, &drawRect, isHitElem ? 3 : 2, NULL, 0);
+
+#if WIN_PLATFORM
+        // 2. GDI direct offscreen HDC rendering: crisp solid border and "目标水印" badge
+        if (hdc) {
+            COLORREF penColor = isHitElem ? RGB(255, 0, 0) : RGB(255, 110, 0);
+            HPEN hPen = CreatePen(PS_SOLID, isHitElem ? 3 : 2, penColor);
+            HGDIOBJ hOldPen = SelectObject(hdc, hPen);
+            HGDIOBJ hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+            // Expand by 1px so the frame sits slightly outside the text glyphs
+            Rectangle(hdc, left - 1, top - 1, right + 1, bottom + 1);
+
+            if (isHitElem) {
+                const wchar_t* badge = L" 目标水印 ";
+                SetBkMode(hdc, OPAQUE);
+                SetBkColor(hdc, RGB(220, 20, 20));
+                SetTextColor(hdc, RGB(255, 255, 255));
+                int textY = top - 18;
+                if (textY < 2) textY = bottom + 2;
+                TextOutW(hdc, left - 1, textY, badge, (int)wcslen(badge));
             }
+
+            SelectObject(hdc, hOldBrush);
+            SelectObject(hdc, hOldPen);
+            DeleteObject(hPen);
         }
+#endif
     }
+
+#if WIN_PLATFORM
+    if (hdc) {
+        if (hOldFont) SelectObject(hdc, hOldFont);
+        if (hFont) DeleteObject(hFont);
+        AVPageViewReleaseMachinePort(pageView, port);
+    }
+#endif
 }
 
-#pragma pack(push, 1)
-struct DLG_TEMPLATE {
-    DLGTEMPLATE header;
-    WORD menu;
-    WORD class_name;
-    WORD title;
-};
-#pragma pack(pop)
-
-static INT_PTR CALLBACK PanelProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-        case WM_INITDIALOG:
-            SetWindowTextW(hwndDlg, L"WipePDF 预览");
-            CreateWindowW(L"BUTTON", L"上一处", WS_VISIBLE | WS_CHILD, 10, 10, 80, 25, hwndDlg, (HMENU)101, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"下一处", WS_VISIBLE | WS_CHILD, 100, 10, 80, 25, hwndDlg, (HMENU)102, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"排除此项", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, 10, 45, 100, 25, hwndDlg, (HMENU)103, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"确认删除", WS_VISIBLE | WS_CHILD, 10, 80, 80, 25, hwndDlg, (HMENU)104, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"取消退出", WS_VISIBLE | WS_CHILD, 100, 80, 80, 25, hwndDlg, (HMENU)105, NULL, NULL);
-            return TRUE;
-        case WM_COMMAND: {
-            int wmId = LOWORD(wParam);
-            if (wmId == 105) { // Cancel
-                DestroyWindow(hwndDlg);
-            } else if (wmId == 104) { // Execute
-                if (g_CurrentPDDoc) {
-                    std::wstring backupPath;
-                    wchar_t tempDir[MAX_PATH] = {0};
-                    if (GetTempPathW(MAX_PATH, tempDir) > 0) {
-                        backupPath = std::wstring(tempDir) + L"WipePDF_backup_" + std::to_wstring(GetTickCount64()) + L".pdf";
-                        ASText diText = ASTextFromUnicode((const ASUTF16Val *)backupPath.c_str(), kUTF16HostEndian);
-                        if (diText) {
-                            ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
-                            ASTextDestroy(diText);
-                            if (backupPathName) {
-                                PDDocSave(g_CurrentPDDoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
-                                ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
-                            } else {
-                                backupPath.clear();
-                            }
-                        } else {
-                            backupPath.clear();
-                        }
-                    } else {
-                        backupPath.clear();
-                    }
-
-                    wipepdf::CleanResult cleanRes = wipepdf::WatermarkService::executePlan(g_CurrentPDDoc, g_Candidates, g_CurrentOpts);
-                    
-                    std::wstring finishMsg = L"清理完毕！共删除 " + std::to_wstring(cleanRes.totalRemoved) + L" 处。\n";
-                    if (!backupPath.empty()) {
-                        finishMsg += L"备份已存至: " + backupPath + L"\n";
-                    }
-                    MessageBoxW(hwndDlg, finishMsg.c_str(), L"WipePDF", MB_OK);
-                }
-                DestroyWindow(hwndDlg);
-            } else if (wmId == 101) { // Prev
-                if (g_CurrentCandidateIndex > 0) {
-                    g_CurrentCandidateIndex--;
-                    SendDlgItemMessage(hwndDlg, 103, BM_SETCHECK, g_Candidates[g_CurrentCandidateIndex].selected ? BST_UNCHECKED : BST_CHECKED, 0);
-                    AVDoc avDoc = AVAppGetActiveDoc();
-                    if (avDoc) {
-                        AVPageView pageView = AVDocGetPageView(avDoc);
-                        if (pageView) {
-                            AVPageViewGoTo(pageView, g_Candidates[g_CurrentCandidateIndex].pageIndex);
-                            AVPageViewDrawNow(pageView);
-                        }
-                    }
-                }
-            } else if (wmId == 102) { // Next
-                if (g_CurrentCandidateIndex < g_Candidates.size() - 1) {
-                    g_CurrentCandidateIndex++;
-                    SendDlgItemMessage(hwndDlg, 103, BM_SETCHECK, g_Candidates[g_CurrentCandidateIndex].selected ? BST_UNCHECKED : BST_CHECKED, 0);
-                    AVDoc avDoc = AVAppGetActiveDoc();
-                    if (avDoc) {
-                        AVPageView pageView = AVDocGetPageView(avDoc);
-                        if (pageView) {
-                            AVPageViewGoTo(pageView, g_Candidates[g_CurrentCandidateIndex].pageIndex);
-                            AVPageViewDrawNow(pageView);
-                        }
-                    }
-                }
-            } else if (wmId == 103) { // Exclude checkbox
-                bool isChecked = SendDlgItemMessage(hwndDlg, 103, BM_GETCHECK, 0, 0);
-                if (g_CurrentCandidateIndex >= 0 && g_CurrentCandidateIndex < g_Candidates.size()) {
-                    g_Candidates[g_CurrentCandidateIndex].selected = !isChecked;
-                    AVDoc avDoc = AVAppGetActiveDoc();
-                    if (avDoc) {
-                        AVPageView pageView = AVDocGetPageView(avDoc);
-                        if (pageView) AVPageViewDrawNow(pageView);
-                    }
-                }
-            }
-            return TRUE;
-        }
-        case WM_DESTROY:
-            if (g_DrawProc) {
-                AVAppUnregisterForPageViewDrawingEx(g_DrawProc, NULL);
-                g_DrawProc = NULL;
-            }
-            g_Candidates.clear();
-            g_CurrentPDDoc = NULL;
-            g_hPanel = NULL;
-            // Force redraw to clear highlights
-            AVDoc avDoc = AVAppGetActiveDoc();
-            if (avDoc) {
-                AVPageView pageView = AVDocGetPageView(avDoc);
-                if (pageView) AVPageViewDrawNow(pageView);
-            }
-            break;
-    }
-    return FALSE;
-}
-
-static void ShowPreviewPanel(PDDoc pdDoc, const wipepdf::CleanOptions& opts) {
-    g_CurrentPDDoc = pdDoc;
-    g_CurrentOpts = opts;
-    g_Candidates = wipepdf::WatermarkService::scanDocument(pdDoc, opts);
-    g_CurrentCandidateIndex = 0;
-    
-    if (g_Candidates.empty()) {
-        MessageBoxW(NULL, L"未找到更多相似水印。", L"WipePDF", MB_OK);
-        return;
-    }
-
-    if (!g_DrawProc) {
-        g_DrawProc = ASCallbackCreateProto(AVPageViewDrawProc, MyPageViewDrawProc);
-        AVAppRegisterForPageViewDrawing(g_DrawProc, NULL);
-    }
-    
-    if (!g_hPanel) {
-        DLG_TEMPLATE tpl = {0};
-        tpl.header.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE | DS_MODALFRAME;
-        tpl.header.cx = 200;
-        tpl.header.cy = 150;
-        g_hPanel = CreateDialogIndirectParamW(NULL, (LPCDLGTEMPLATE)&tpl, NULL, PanelProc, 0);
-    } else {
-        SetForegroundWindow(g_hPanel);
-    }
-    
-    AVDoc avDoc = AVAppGetActiveDoc();
-    if (avDoc) {
-        AVPageView pageView = AVDocGetPageView(avDoc);
-        if (pageView) {
-            AVPageViewGoTo(pageView, g_Candidates[0].pageIndex);
-            AVPageViewDrawNow(pageView);
-        }
-    }
-}
+} // anonymous namespace
 
 #include <string>
 #include <cstdio>
@@ -277,6 +216,7 @@ void ACCB1 SelectionTool::ActivateProc(AVTool tool, ASBool persistent) {
 }
 
 void ACCB1 SelectionTool::DeactivateProc(AVTool tool) {
+    ClearHighlight();
 }
 
 ASAtom ACCB1 SelectionTool::GetTypeProc(AVTool tool) {
@@ -525,6 +465,7 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
     ASInt32 numElems = PDEContentGetNumElems(content);
     PDEElement clickedElem = NULL;
     ASInt32 clickedType = -1;
+    ASFixedRect hitPageBBox = {0, 0, 0, 0};
     
     TargetFingerprint fp;
 
@@ -540,6 +481,7 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
 
             clickedElem = elem;
             clickedType = PDEObjectGetType((PDEObject)elem);
+            hitPageBBox = bbox;
             DiagLog("  hit top elem[%d] type=%d bbox=(%.1f,%.1f)-(%.1f,%.1f)",
                     i, clickedType, ASFixedToFloat(bbox.left), ASFixedToFloat(bbox.bottom),
                     ASFixedToFloat(bbox.right), ASFixedToFloat(bbox.top));
@@ -627,31 +569,12 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
     DiagLog("HandleClick final: fp.active=%d type=%d", fp.active ? 1 : 0, fp.type);
 
     if (fp.active) {
-        std::wstring msg = L"找到目标元素特征：\n";
-        if (fp.type == kPDEImage) {
-            msg += L"  - 类型：图片\n  - 尺寸：" + std::to_wstring(fp.width) + L" x " + std::to_wstring(fp.height) + L" pt";
-            if (fp.pixelWidth > 0 && fp.pixelHeight > 0)
-                msg += L"（像素 " + std::to_wstring(fp.pixelWidth) + L" x " + std::to_wstring(fp.pixelHeight) + L"）";
-            msg += L"\n";
-        } else if (fp.type == kPDEPath) {
-            msg += L"  - 类型：矢量图形\n  - 尺寸：" + std::to_wstring(fp.bboxWidth) + L" x " + std::to_wstring(fp.bboxHeight) + L"\n";
-            if (fp.isPattern) msg += L"  - 填充：图案填充\n";
-        } else if (fp.type == kPDEText) {
-            std::wstring wcontent(fp.textContent.begin(), fp.textContent.end());
-            msg += L"  - 类型：文本\n  - 内容：" + wcontent + L"\n";
-        }
+        AVDoc avDoc = AVAppGetActiveDoc();
+        PDDoc pdDoc = avDoc ? AVDocGetPDDoc(avDoc) : NULL;
+        if (!pdDoc) return false;
 
-        // 位置信息：显示命中元素占页面比例，帮助用户识别是否误点了整页背景图。
-        msg += L"  - 位置：水平 " + std::to_wstring((int)(fp.relX * 100)) + L"%，垂直 " + std::to_wstring((int)(fp.relY * 100)) + L"%\n";
-        msg += L"  - 占页宽度：" + std::to_wstring((int)(fp.relW * 100)) + L"%，占页高度：" + std::to_wstring((int)(fp.relH * 100)) + L"%\n";
+        ASInt32 pageIndex = AVPageViewGetPageNum(pageView);
 
-        // 整页图保护：命中的元素几乎占满整页，极可能是扫描版背景图而非水印。
-        bool fullPageRisk = (fp.relW > 0.6f && fp.relH > 0.6f);
-        if (fullPageRisk) {
-            msg += L"\n⚠️ 注意：该元素几乎占满整页（很可能是扫描版页面背景图）。\n删除它会把正文背景一起删掉，建议仅当确认这是整页水印时继续。\n";
-        }
-
-        // 先统计会删除多少个元素，让用户明确后果。
         CleanOptions opts;
         opts.targetFingerprint = fp;
         opts.removeTransparentText = false;
@@ -660,31 +583,124 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
         opts.removeLinks = false;
         opts.removeBottomStrip = false;
 
-        CleanResult count = WatermarkService::countDocument(AVDocGetPDDoc(AVAppGetActiveDoc()), opts);
-        msg += L"\n将在全篇文档中匹配并删除 " + std::to_wstring(count.totalRemoved) + L" 处同款元素（覆盖全部页面）。\n\n是否继续删除？";
+        // Scan document for all matching candidate elements
+        std::vector<wipepdf::WatermarkCandidate> candidates = WatermarkService::scanDocument(pdDoc, opts);
 
-        bool confirmed = (MessageBoxW(NULL, msg.c_str(), L"确认删除同款水印", MB_YESNO | MB_ICONQUESTION) == IDYES);
-
-        // Full-page elements are almost certainly scanned page backgrounds, not
-        // watermarks. Require a second, explicit confirmation before touching
-        // the document to make accidental mass-deletion much harder.
-        if (confirmed && fullPageRisk) {
-            int again = MessageBoxW(NULL,
-                L"⚠️ 严重警告：您命中的是几乎占满整页的元素（很可能是页面背景图/扫描图），\n"
-                L"删除它会把所有页面的正文背景一起删掉！\n\n"
-                L"如确知这就是要删除的整页水印，请点击【是】继续，否则点击【否】取消。",
-                L"WipePDF 高危操作确认", MB_YESNO | MB_ICONWARNING);
-            if (again != IDYES) confirmed = false;
+        // Ensure the clicked element itself is in the candidates list
+        bool hitIncluded = false;
+        for (const auto& c : candidates) {
+            if (c.pageIndex == pageIndex &&
+                std::fabs(ASFixedToFloat(c.bbox.left) - ASFixedToFloat(hitPageBBox.left)) < 2.0f &&
+                std::fabs(ASFixedToFloat(c.bbox.bottom) - ASFixedToFloat(hitPageBBox.bottom)) < 2.0f) {
+                hitIncluded = true;
+                break;
+            }
+        }
+        if (!hitIncluded) {
+            wipepdf::WatermarkCandidate cHit;
+            cHit.pageIndex = pageIndex;
+            cHit.bbox = hitPageBBox;
+            cHit.selected = true;
+            cHit.matchType = "DirectHit";
+            cHit.elemType = clickedType;
+            candidates.insert(candidates.begin(), cHit);
         }
 
-        if (confirmed) {
-            // R07: Preview confirmation before execution
-            AVDoc avDoc = AVAppGetActiveDoc();
-            PDDoc pdDoc = avDoc ? AVDocGetPDDoc(avDoc) : NULL;
-            if (pdDoc) {
-                ShowPreviewPanel(pdDoc, opts);
-                return true;
+        // Set highlight state and activate drawing proc
+        g_State.active = true;
+        g_State.pddoc = pdDoc;
+        g_State.hitPageIndex = pageIndex;
+        g_State.hitBBox = hitPageBBox;
+        g_State.candidates = candidates;
+
+        if (!g_DrawProc) {
+            g_DrawProc = ASCallbackCreateProto(AVPageViewDrawProc, MyPageViewDrawProc);
+            AVAppRegisterForPageViewDrawing(g_DrawProc, NULL);
+        }
+
+        // Immediately refresh page view so red highlight appears ON PAGE before dialog
+        AVPageViewDrawNow(pageView);
+
+        // Build detailed information message
+        std::wstring msg = L"【已在页面上用红色矩形框标出选中的水印】\n\n";
+        if (fp.type == kPDEImage) {
+            msg += L"  - 目标类型：图片\n  - 尺寸：" + std::to_wstring(fp.width) + L" x " + std::to_wstring(fp.height) + L" pt";
+            if (fp.pixelWidth > 0 && fp.pixelHeight > 0)
+                msg += L"（像素 " + std::to_wstring(fp.pixelWidth) + L" x " + std::to_wstring(fp.pixelHeight) + L"）";
+            msg += L"\n";
+        } else if (fp.type == kPDEPath) {
+            msg += L"  - 目标类型：矢量图形\n  - 尺寸：" + std::to_wstring(fp.bboxWidth) + L" x " + std::to_wstring(fp.bboxHeight) + L"\n";
+            if (fp.isPattern) msg += L"  - 填充：图案填充\n";
+        } else if (fp.type == kPDEText) {
+            std::wstring wcontent(fp.textContent.begin(), fp.textContent.end());
+            msg += L"  - 目标类型：文本\n  - 内容：" + wcontent + L"\n";
+        }
+
+        msg += L"  - 占页位置：水平 " + std::to_wstring((int)(fp.relX * 100)) + L"%，垂直 " + std::to_wstring((int)(fp.relY * 100)) + L"%\n";
+        msg += L"  - 占页宽度：" + std::to_wstring((int)(fp.relW * 100)) + L"%，占页高度：" + std::to_wstring((int)(fp.relH * 100)) + L"%\n";
+
+        bool fullPageRisk = (fp.relW > 0.6f && fp.relH > 0.6f);
+        if (fullPageRisk) {
+            msg += L"\n⚠️ 注意：该元素几乎占满整页（很可能是扫描版页面背景图）。\n建议仔细核对红框区域，确认不是页面正文背景！\n";
+        }
+
+        msg += L"\n全篇文档共匹配到 " + std::to_wstring(candidates.size()) + L" 处同款水印元素。\n\n";
+        msg += L"请直接核对页面上红框圈出的标记：\n";
+        msg += L"【是】—— 确认清除所有红框标出的同款水印（自动创建备份）\n";
+        msg += L"【否】—— 误选/取消，清除红框标记退出";
+
+        int choice = MessageBoxW(NULL, msg.c_str(), L"WipePDF 水印清除确认", MB_YESNO | MB_ICONQUESTION);
+
+        if (choice == IDYES) {
+            if (fullPageRisk) {
+                int again = MessageBoxW(NULL,
+                    L"⚠️ 严重警告：您命中的是几乎占满整页的元素（很可能是页面背景图/扫描图），\n"
+                    L"删除它会把所有页面的正文背景一起删掉！\n\n"
+                    L"如确知这就是要删除的整页水印，请点击【是】继续，否则点击【否】取消。",
+                    L"WipePDF 高危操作确认", MB_YESNO | MB_ICONWARNING);
+                if (again != IDYES) {
+                    ClearHighlight(pageView);
+                    return false;
+                }
             }
+
+            // Safety backup
+            std::wstring backupPath;
+            wchar_t tempDir[MAX_PATH] = {0};
+            if (GetTempPathW(MAX_PATH, tempDir) > 0) {
+                backupPath = std::wstring(tempDir) + L"WipePDF_backup_" + std::to_wstring(GetTickCount64()) + L".pdf";
+                ASText diText = ASTextFromUnicode((const ASUTF16Val *)backupPath.c_str(), kUTF16HostEndian);
+                if (diText) {
+                    ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
+                    ASTextDestroy(diText);
+                    if (backupPathName) {
+                        PDDocSave(pdDoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
+                        ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
+                    } else {
+                        backupPath.clear();
+                    }
+                } else {
+                    backupPath.clear();
+                }
+            }
+
+            // Execute removal plan
+            wipepdf::CleanResult cleanRes = wipepdf::WatermarkService::executePlan(pdDoc, g_State.candidates, opts);
+
+            // Clear highlights and force refresh
+            ClearHighlight(pageView);
+
+            std::wstring finishMsg = L"水印清理完成！\n\n共成功清除 " + std::to_wstring(cleanRes.totalRemoved) + L" 处同款水印元素。\n页面已即时刷新。\n\n⚠️ 重要提示：\n";
+            if (!backupPath.empty()) {
+                finishMsg += L"  - 操作前已自动备份原文档到：\n    " + backupPath + L"\n    如误删可用该文件恢复。\n";
+            }
+            finishMsg += L"  - 删除会直接修改当前文档，Acrobat 可能在关闭时自动保存覆盖原文件。\n    如需保留，请立即按 Ctrl+S 另存，或先另存一份副本。";
+            MessageBoxW(NULL, finishMsg.c_str(), L"WipePDF 水印清理成功", MB_OK | MB_ICONINFORMATION);
+            return true;
+        } else {
+            // Cancelled: clear highlight and restore clean page
+            ClearHighlight(pageView);
+            return false;
         }
     } else {
         MessageBoxW(NULL, L"未找到有效的水印元素。\n请确认点击的 PDF 元素存在且未被删除。", L"WipePDF 提示", MB_OK | MB_ICONWARNING);
