@@ -1121,4 +1121,119 @@ CleanResult WatermarkService::executePlan(PDDoc pddoc, const std::vector<Waterma
     return res;
 }
 
+WhiteoutResult WatermarkService::applyWhiteoutPatch(PDDoc pddoc, const ASFixedRect& targetPageRect, ASInt32 refPageIndex, bool applyAllPages) {
+    WhiteoutResult res;
+    if (!pddoc) return res;
+
+    ASInt32 numPages = PDDocGetNumPages(pddoc);
+    if (numPages <= 0) return res;
+
+    // 1. Create safety backup copy before modifying the document
+    wchar_t tempDir[MAX_PATH] = {0};
+    if (GetTempPathW(MAX_PATH, tempDir) > 0) {
+        res.backupPath = std::wstring(tempDir) + L"WipePDF_backup_" + std::to_wstring(GetTickCount64()) + L".pdf";
+        ASText diText = ASTextFromUnicode((const ASUTF16Val *)res.backupPath.c_str(), kUTF16HostEndian);
+        if (diText) {
+            ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
+            ASTextDestroy(diText);
+            if (backupPathName) {
+                PDDocSave(pddoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
+                ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
+            } else {
+                res.backupPath.clear();
+            }
+        } else {
+            res.backupPath.clear();
+        }
+    }
+
+    // 2. Obtain reference page geometry for relative coordinate calculations
+    ASFixedRect refCropBox;
+    PDPage refPage = PDDocAcquirePage(pddoc, refPageIndex);
+    if (!refPage) return res;
+    PDPageGetCropBox(refPage, &refCropBox);
+    PDPageRelease(refPage);
+
+    float refW = ASFixedToFloat(refCropBox.right - refCropBox.left);
+    float refH = ASFixedToFloat(refCropBox.top - refCropBox.bottom);
+    if (refW <= 0.0f) refW = 1.0f;
+    if (refH <= 0.0f) refH = 1.0f;
+
+    // Normalized relative bounds (0.0 ~ 1.0)
+    float relLeft   = (ASFixedToFloat(targetPageRect.left - refCropBox.left)) / refW;
+    float relRight  = (ASFixedToFloat(targetPageRect.right - refCropBox.left)) / refW;
+    float relBottom = (ASFixedToFloat(targetPageRect.bottom - refCropBox.bottom)) / refH;
+    float relTop    = (ASFixedToFloat(targetPageRect.top - refCropBox.bottom)) / refH;
+
+    ASInt32 startPage = applyAllPages ? 0 : refPageIndex;
+    ASInt32 endPage   = applyAllPages ? numPages : (refPageIndex + 1);
+
+    for (ASInt32 i = startPage; i < endPage; ++i) {
+        PDPage page = PDDocAcquirePage(pddoc, i);
+        if (!page) continue;
+
+        ASFixedRect pageCropBox;
+        PDPageGetCropBox(page, &pageCropBox);
+        float pW = ASFixedToFloat(pageCropBox.right - pageCropBox.left);
+        float pH = ASFixedToFloat(pageCropBox.top - pageCropBox.bottom);
+
+        // Compute page-specific coordinates
+        ASFixedRect patchRect;
+        if (applyAllPages) {
+            patchRect.left   = pageCropBox.left + FloatToASFixed(relLeft * pW);
+            patchRect.right  = pageCropBox.left + FloatToASFixed(relRight * pW);
+            patchRect.bottom = pageCropBox.bottom + FloatToASFixed(relBottom * pH);
+            patchRect.top    = pageCropBox.bottom + FloatToASFixed(relTop * pH);
+        } else {
+            patchRect = targetPageRect;
+        }
+
+        // Ensure left < right, bottom < top
+        if (patchRect.left > patchRect.right) std::swap(patchRect.left, patchRect.right);
+        if (patchRect.bottom > patchRect.top) std::swap(patchRect.bottom, patchRect.top);
+
+        PDEContent content = PDPageAcquirePDEContent(page, gExtensionID);
+        if (content) {
+            PDEPath path = PDEPathCreate();
+            if (path) {
+                ASInt32 pathData[] = {
+                    kPDEMoveTo,   patchRect.left,  patchRect.bottom,
+                    kPDELineTo,   patchRect.right, patchRect.bottom,
+                    kPDELineTo,   patchRect.right, patchRect.top,
+                    kPDELineTo,   patchRect.left,  patchRect.top,
+                    kPDEClosePath
+                };
+                PDEPathSetData(path, pathData, sizeof(pathData));
+                PDEPathSetPaintOp(path, kPDEFill);
+
+                PDEColorSpace cs = PDEColorSpaceCreateFromName(ASAtomFromString("DeviceRGB"));
+                PDEGraphicState gState;
+                memset(&gState, 0, sizeof(gState));
+                gState.fillColorSpec.space = cs;
+                gState.fillColorSpec.value.color[0] = fixedOne; // R = 1.0 (white)
+                gState.fillColorSpec.value.color[1] = fixedOne; // G = 1.0 (white)
+                gState.fillColorSpec.value.color[2] = fixedOne; // B = 1.0 (white)
+                PDEElementSetGState((PDEElement)path, &gState, sizeof(gState));
+                if (cs) {
+                    PDERelease((PDEObject)cs);
+                }
+
+                // Add to content stream at the end so it overlays the fused raster watermark
+                PDEContentAddElem(content, kPDEAfterLast, (PDEElement)path);
+
+                PDPageSetPDEContent(page, gExtensionID);
+                PDPageNotifyContentsDidChange(page);
+
+                PDERelease((PDEObject)path);
+                res.pagesPatched++;
+            }
+            PDPageReleasePDEContent(page, gExtensionID);
+        }
+        PDPageRelease(page);
+    }
+
+    res.success = (res.pagesPatched > 0);
+    return res;
+}
+
 } // namespace wipepdf

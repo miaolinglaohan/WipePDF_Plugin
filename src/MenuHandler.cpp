@@ -1,4 +1,4 @@
-﻿#include "MenuHandler.h"
+#include "MenuHandler.h"
 #include "WatermarkService.h"
 #include "SelectionTool.h"
 #include <string>
@@ -127,6 +127,7 @@ static AVMenuItem gItemSettings = NULL;
 static AVMenuItem gItemAbout = NULL;
 static AVMenuItem gEditItemClean = NULL;
 static AVMenuItem gItemSelectionTool = NULL;
+static AVMenuItem gItemWhiteout = NULL;
 
 ACCB1 void ACCB2 OnCleanActiveDocProc(void *clientData) {
     (void)clientData;
@@ -196,8 +197,11 @@ void MenuHandler::setupMenus() {
         gItemClean = CreateUnicodeMenuItem(L"一键清除当前文档水印", "ADBE:WipePDF:CleanActive", OnCleanActiveDocProc, OnDocOpenEnabledProc);
         if (gItemClean) AVMenuAddMenuItem(gWipePDFMenu, gItemClean, APPEND_MENUITEM);
 
-        gItemSelectionTool = CreateUnicodeMenuItem(L"手动点选同款水印...", "ADBE:WipePDF:SelectionTool", OnSelectionToolProc, OnDocOpenEnabledProc);
+        gItemSelectionTool = CreateUnicodeMenuItem(L"点选同款水印清理...", "ADBE:WipePDF:SelectionTool", OnSelectionToolProc, OnDocOpenEnabledProc);
         if (gItemSelectionTool) AVMenuAddMenuItem(gWipePDFMenu, gItemSelectionTool, APPEND_MENUITEM);
+
+        gItemWhiteout = CreateUnicodeMenuItem(L"框选涂白遮盖 (底图融合水印)...", "ADBE:WipePDF:WhiteoutTool", OnSelectionToolProc, OnDocOpenEnabledProc);
+        if (gItemWhiteout) AVMenuAddMenuItem(gWipePDFMenu, gItemWhiteout, APPEND_MENUITEM);
 
         gItemInspect = CreateUnicodeMenuItem(L"扫描当前页面水印元素...", "ADBE:WipePDF:Inspect", OnInspectCurrentPageProc, OnDocOpenEnabledProc);
         if (gItemInspect) AVMenuAddMenuItem(gWipePDFMenu, gItemInspect, APPEND_MENUITEM);
@@ -228,6 +232,7 @@ void MenuHandler::setupMenus() {
 void MenuHandler::cleanupMenus() {
     if (gWipePDFMenu) { AVMenuRemove(gWipePDFMenu); AVMenuRelease(gWipePDFMenu); gWipePDFMenu = NULL; }
     if (gItemSelectionTool) { AVMenuItemRemove(gItemSelectionTool); AVMenuItemRelease(gItemSelectionTool); gItemSelectionTool = NULL; }
+    if (gItemWhiteout) { AVMenuItemRemove(gItemWhiteout); AVMenuItemRelease(gItemWhiteout); gItemWhiteout = NULL; }
     if (gEditItemClean) { AVMenuItemRemove(gEditItemClean); AVMenuItemRelease(gEditItemClean); gEditItemClean = NULL; }
 }
 

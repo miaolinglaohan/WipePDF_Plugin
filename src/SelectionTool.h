@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "PluginInit.h"
 #include "WatermarkService.h"
 
@@ -24,6 +24,10 @@ private:
     // Hit testing logic. Returns true if the click hit a valid element and
     // the user confirmed deletion (so the caller can restore the prior tool).
     static bool HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y);
+
+    // Interactive rubberband box selection (Option D & Option A).
+    // Returns true if whiteout patch was applied (so caller can restore prior tool).
+    static bool HandleBoxDrag(AVPageView pageView, const AVDevRect &dragRect);
 
     // Recursively hit-test inside a Form XObject or marked-content Container
     // (e.g. a /Artifact /Subtype /Watermark block). Child element bboxes are

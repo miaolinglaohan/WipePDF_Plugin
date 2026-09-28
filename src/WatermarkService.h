@@ -116,6 +116,12 @@ struct CleanResult {
     }
 };
 
+struct WhiteoutResult {
+    int pagesPatched = 0;
+    std::wstring backupPath;
+    bool success = false;
+};
+
 class WatermarkService {
 public:
     static CleanResult cleanActiveDocument(const CleanOptions &opts = CleanOptions());
@@ -123,8 +129,10 @@ public:
     // Count how many elements would be removed (no modification), used to
     // preview the deletion scope before the user confirms.
     static CleanResult countDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
-        static std::vector<WatermarkCandidate> scanDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
+    static std::vector<WatermarkCandidate> scanDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
     static CleanResult executePlan(PDDoc pddoc, const std::vector<WatermarkCandidate>& plan, const CleanOptions &opts = CleanOptions());
+    // Option A: Lossless vector whiteout patch applied over fused watermarks
+    static WhiteoutResult applyWhiteoutPatch(PDDoc pddoc, const ASFixedRect& targetPageRect, ASInt32 refPageIndex, bool applyAllPages);
     static PageInspectResult inspectPage(PDDoc pddoc, ASInt32 pageIndex, const CleanOptions &opts = CleanOptions());
     // True if the element is a marked-content Container tagged as a PDF
     // standard watermark (/Artifact + /Subtype /Watermark).
