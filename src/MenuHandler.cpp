@@ -1,6 +1,7 @@
 #include "MenuHandler.h"
 #include "WatermarkService.h"
 #include "MetadataService.h"
+#include "BackupService.h"
 #include "SelectionTool.h"
 #include <string>
 #include <vector>
@@ -130,6 +131,8 @@ static AVMenuItem gEditItemClean = NULL;
 static AVMenuItem gItemSelectionTool = NULL;
 static AVMenuItem gItemWhiteout = NULL;
 static AVMenuItem gItemMetadata = NULL;
+static AVMenuItem gItemOpenBackupFolder = NULL;
+static AVMenuItem gItemClearBackups = NULL;
 
 ACCB1 void ACCB2 OnCleanActiveDocProc(void *clientData) {
     (void)clientData;
@@ -164,6 +167,16 @@ ACCB1 void ACCB2 OnSelectionToolProc(void *clientData) {
 ACCB1 void ACCB2 OnCleanMetadataProc(void *clientData) {
     (void)clientData;
     MenuHandler::onCleanMetadata();
+}
+
+ACCB1 void ACCB2 OnOpenBackupFolderProc(void *clientData) {
+    (void)clientData;
+    MenuHandler::onOpenBackupFolder();
+}
+
+ACCB1 void ACCB2 OnClearBackupsProc(void *clientData) {
+    (void)clientData;
+    MenuHandler::onClearBackups();
 }
 
 ACCB1 ASBool ACCB2 OnDocOpenEnabledProc(void *clientData) {
@@ -219,8 +232,20 @@ void MenuHandler::setupMenus() {
         gItemBatch = CreateUnicodeMenuItem(L"批量文档水印清理...", "ADBE:WipePDF:Batch", OnCleanBatchProc, NULL);
         if (gItemBatch) AVMenuAddMenuItem(gWipePDFMenu, gItemBatch, APPEND_MENUITEM);
 
-        gItemMetadata = CreateUnicodeMenuItem(L"一键清除 PDF 元数据", "ADBE:WipePDF:CleanMetadata", OnCleanMetadataProc, OnDocOpenEnabledProc);
+        gItemMetadata = CreateUnicodeMenuItem(L"一键清除当前文档元数据", "ADBE:WipePDF:CleanMetadata", OnCleanMetadataProc, OnDocOpenEnabledProc);
         if (gItemMetadata) AVMenuAddMenuItem(gWipePDFMenu, gItemMetadata, APPEND_MENUITEM);
+
+        AVMenuItem itemSep2 = CreateUnicodeMenuItem(L"-", "ADBE:WipePDF:Sep2", NULL, NULL);
+        if (itemSep2) AVMenuAddMenuItem(gWipePDFMenu, itemSep2, APPEND_MENUITEM);
+
+        gItemOpenBackupFolder = CreateUnicodeMenuItem(L"打开安全备份文件夹...", "ADBE:WipePDF:OpenBackupFolder", OnOpenBackupFolderProc, NULL);
+        if (gItemOpenBackupFolder) AVMenuAddMenuItem(gWipePDFMenu, gItemOpenBackupFolder, APPEND_MENUITEM);
+
+        gItemClearBackups = CreateUnicodeMenuItem(L"一键清空历史备份文件...", "ADBE:WipePDF:ClearBackups", OnClearBackupsProc, NULL);
+        if (gItemClearBackups) AVMenuAddMenuItem(gWipePDFMenu, gItemClearBackups, APPEND_MENUITEM);
+
+        AVMenuItem itemSep3 = CreateUnicodeMenuItem(L"-", "ADBE:WipePDF:Sep3", NULL, NULL);
+        if (itemSep3) AVMenuAddMenuItem(gWipePDFMenu, itemSep3, APPEND_MENUITEM);
 
         gItemSettings = CreateUnicodeMenuItem(L"水印清理规则设置...", "ADBE:WipePDF:Settings", OnShowSettingsProc, NULL);
         if (gItemSettings) AVMenuAddMenuItem(gWipePDFMenu, gItemSettings, APPEND_MENUITEM);
@@ -245,12 +270,14 @@ void MenuHandler::cleanupMenus() {
     // ownership, so touching items after the menu is released would be a
     // use-after-free).
     AVMenuItem items[] = { gItemClean, gItemSelectionTool, gItemWhiteout, gItemInspect,
-                           gItemBatch, gItemMetadata, gItemSettings, gItemAbout, gEditItemClean };
+                           gItemBatch, gItemMetadata, gItemOpenBackupFolder, gItemClearBackups,
+                           gItemSettings, gItemAbout, gEditItemClean };
     for (AVMenuItem item : items) {
         if (item) { AVMenuItemRemove(item); AVMenuItemRelease(item); }
     }
     gItemClean = gItemSelectionTool = gItemWhiteout = gItemInspect = NULL;
-    gItemBatch = gItemMetadata = gItemSettings = gItemAbout = NULL;
+    gItemBatch = gItemMetadata = gItemOpenBackupFolder = gItemClearBackups = NULL;
+    gItemSettings = gItemAbout = NULL;
     gEditItemClean = NULL;
 
     if (gWipePDFMenu) { AVMenuRemove(gWipePDFMenu); AVMenuRelease(gWipePDFMenu); gWipePDFMenu = NULL; }
@@ -465,11 +492,45 @@ void MenuHandler::onCleanMetadata() {
     MessageBoxW(NULL, msg.c_str(), L"WipePDF 元数据清除完成", MB_OK | MB_ICONINFORMATION);
 }
 
+void MenuHandler::onOpenBackupFolder() {
+    if (!BackupService::OpenBackupFolder()) {
+        std::wstring dir = BackupService::GetBackupDirectory();
+        MessageBoxW(NULL, (L"无法自动打开文件夹，备份目录路径为：\n" + dir).c_str(), L"WipePDF 提示", MB_OK | MB_ICONWARNING);
+    }
+}
+
+void MenuHandler::onClearBackups() {
+    BackupStats stats = BackupService::GetStats();
+    if (stats.fileCount == 0) {
+        std::wstring dir = BackupService::GetBackupDirectory();
+        std::wstring emptyMsg = L"当前没有历史备份文件，备份目录为空：\n" + dir;
+        MessageBoxW(NULL, emptyMsg.c_str(), L"WipePDF 提示", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    wchar_t sizeStr[32];
+    swprintf_s(sizeStr, L"%.1f", stats.totalSizeMB);
+    std::wstring prompt = L"检测到本地共有 " + std::to_wstring(stats.fileCount) + L" 个历史备份文件，\n"
+                          L"共占用磁盘空间 " + sizeStr + L" MB。\n\n"
+                          L"备份存放于专用目录：\n" + BackupService::GetBackupDirectory() + L"\n\n"
+                          L"清空后不可恢复，是否确认立即清空全部历史备份？";
+
+    if (MessageBoxW(NULL, prompt.c_str(), L"WipePDF 清空历史备份确认", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+        BackupStats res = BackupService::ClearAll();
+        wchar_t freedStr[32];
+        swprintf_s(freedStr, L"%.1f", res.totalSizeMB);
+        std::wstring doneMsg = L"历史备份清理完成！\n\n"
+                               L"共清除了 " + std::to_wstring(res.fileCount) + L" 个备份文件，\n"
+                               L"成功释放磁盘空间 " + freedStr + L" MB。";
+        MessageBoxW(NULL, doneMsg.c_str(), L"WipePDF 清理成功", MB_OK | MB_ICONINFORMATION);
+    }
+}
+
 void MenuHandler::onShowSettings() {
     ShowSettingsDialog();
 }
 void MenuHandler::onAbout() {
-    MessageBoxW(NULL, L"WipePDF Pro\nv1.5.1", L"WipePDF", MB_OK);
+    MessageBoxW(NULL, L"WipePDF Pro\nv1.6.0", L"WipePDF", MB_OK);
 }
 
 } // namespace wipepdf

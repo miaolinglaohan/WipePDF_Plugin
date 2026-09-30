@@ -1,4 +1,5 @@
 #include "WatermarkService.h"
+#include "BackupService.h"
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -150,33 +151,11 @@ static bool FingerprintExactMatch(const std::string &raw, const std::string &fpR
     return false;
 }
 
-// Save a full, independent copy of the current document state to %TEMP%.
+// Save a full, independent copy of the current document state to %TEMP%\WipePDF_Backups\.
 // Callers treat the returned path as a restore point BEFORE modifying the
 // document. Returns an empty string when the backup cannot be created.
 std::wstring WatermarkService::BackupDocumentToTemp(PDDoc pddoc) {
-    if (!pddoc) return std::wstring();
-
-    wchar_t tempDir[MAX_PATH] = {0};
-    if (GetTempPathW(MAX_PATH, tempDir) == 0) return std::wstring();
-
-    std::wstring backupPath = std::wstring(tempDir) + L"WipePDF_backup_" +
-                              std::to_wstring(GetTickCount64()) + L".pdf";
-    ASText diText = ASTextFromUnicode((const ASUTF16Val *)backupPath.c_str(), kUTF16HostEndian);
-    if (!diText) return std::wstring();
-
-    ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
-    ASTextDestroy(diText);
-    if (!backupPathName) return std::wstring();
-
-    PDDocSave(pddoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
-    ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
-
-    // Only advertise the backup when the file actually exists on disk.
-    DWORD attrs = GetFileAttributesW(backupPath.c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-        return std::wstring();
-    }
-    return backupPath;
+    return BackupService::CreateBackup(pddoc);
 }
 
 CleanResult WatermarkService::cleanActiveDocument(const CleanOptions &opts) {

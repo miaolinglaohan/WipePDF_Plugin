@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(WipePDF_Plugin VERSION 1.5.1 LANGUAGES C CXX)
+project(WipePDF_Plugin VERSION 1.6.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,6 +48,7 @@ set(PLUGIN_SOURCES
     src/SelectionTool.cpp
     src/WatermarkService.cpp
     src/MetadataService.cpp
+    src/BackupService.cpp
     sdk/Headers/API/PIMain.c
     src/WipePDF.def
 )
