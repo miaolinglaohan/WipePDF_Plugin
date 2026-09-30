@@ -1,5 +1,5 @@
-﻿cmake_minimum_required(VERSION 3.20)
-project(WipePDF_Plugin VERSION 1.0.0 LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.20)
+project(WipePDF_Plugin VERSION 1.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +28,11 @@ add_definitions(
     -DWIPEPDF_EXPORTS
     -DPLUGIN=1
     -DPRODUCT="Plugin.h"
+    # Request the PDMetadata HFT (XMP metadata access). PIRequir.h gates
+    # PI_PDMETADATA_VERSION behind this switch, and PIMain.c - which defines
+    # and imports the HFT globals - does not include PIHeaders.h, so the
+    # define must be supplied for every translation unit here.
+    -DPDMETADATA_HFT=1
 )
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -42,6 +47,7 @@ set(PLUGIN_SOURCES
     src/MenuHandler.cpp
     src/SelectionTool.cpp
     src/WatermarkService.cpp
+    src/MetadataService.cpp
     sdk/Headers/API/PIMain.c
     src/WipePDF.def
 )

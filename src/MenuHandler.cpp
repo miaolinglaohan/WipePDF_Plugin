@@ -1,5 +1,6 @@
 #include "MenuHandler.h"
 #include "WatermarkService.h"
+#include "MetadataService.h"
 #include "SelectionTool.h"
 #include <string>
 #include <vector>
@@ -128,6 +129,7 @@ static AVMenuItem gItemAbout = NULL;
 static AVMenuItem gEditItemClean = NULL;
 static AVMenuItem gItemSelectionTool = NULL;
 static AVMenuItem gItemWhiteout = NULL;
+static AVMenuItem gItemMetadata = NULL;
 
 ACCB1 void ACCB2 OnCleanActiveDocProc(void *clientData) {
     (void)clientData;
@@ -157,6 +159,11 @@ ACCB1 void ACCB2 OnAboutProc(void *clientData) {
 ACCB1 void ACCB2 OnSelectionToolProc(void *clientData) {
     (void)clientData;
     MenuHandler::onSelectionTool();
+}
+
+ACCB1 void ACCB2 OnCleanMetadataProc(void *clientData) {
+    (void)clientData;
+    MenuHandler::onCleanMetadata();
 }
 
 ACCB1 ASBool ACCB2 OnDocOpenEnabledProc(void *clientData) {
@@ -212,6 +219,9 @@ void MenuHandler::setupMenus() {
         gItemBatch = CreateUnicodeMenuItem(L"批量文档水印清理...", "ADBE:WipePDF:Batch", OnCleanBatchProc, NULL);
         if (gItemBatch) AVMenuAddMenuItem(gWipePDFMenu, gItemBatch, APPEND_MENUITEM);
 
+        gItemMetadata = CreateUnicodeMenuItem(L"一键清除 PDF 元数据", "ADBE:WipePDF:CleanMetadata", OnCleanMetadataProc, OnDocOpenEnabledProc);
+        if (gItemMetadata) AVMenuAddMenuItem(gWipePDFMenu, gItemMetadata, APPEND_MENUITEM);
+
         gItemSettings = CreateUnicodeMenuItem(L"水印清理规则设置...", "ADBE:WipePDF:Settings", OnShowSettingsProc, NULL);
         if (gItemSettings) AVMenuAddMenuItem(gWipePDFMenu, gItemSettings, APPEND_MENUITEM);
 
@@ -233,6 +243,7 @@ void MenuHandler::cleanupMenus() {
     if (gWipePDFMenu) { AVMenuRemove(gWipePDFMenu); AVMenuRelease(gWipePDFMenu); gWipePDFMenu = NULL; }
     if (gItemSelectionTool) { AVMenuItemRemove(gItemSelectionTool); AVMenuItemRelease(gItemSelectionTool); gItemSelectionTool = NULL; }
     if (gItemWhiteout) { AVMenuItemRemove(gItemWhiteout); AVMenuItemRelease(gItemWhiteout); gItemWhiteout = NULL; }
+    if (gItemMetadata) { AVMenuItemRemove(gItemMetadata); AVMenuItemRelease(gItemMetadata); gItemMetadata = NULL; }
     if (gEditItemClean) { AVMenuItemRemove(gEditItemClean); AVMenuItemRelease(gEditItemClean); gEditItemClean = NULL; }
 }
 
@@ -413,6 +424,35 @@ void MenuHandler::onCleanBatch() {
     msg += L"\n注意：已处理的文件已直接覆盖保存原文件。";
     MessageBoxW(NULL, msg.c_str(), L"WipePDF 批量清理完成", MB_OK | MB_ICONINFORMATION);
 }
+void MenuHandler::onCleanMetadata() {
+    AVDoc avDoc = AVAppGetActiveDoc();
+    if (!avDoc) {
+        MessageBoxW(NULL, L"请在 Adobe Acrobat 中打开需要清理元数据的 PDF 文档", L"WipePDF 提示", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    PDDoc pdDoc = AVDocGetPDDoc(avDoc);
+    if (!pdDoc) return;
+
+    // Confirmation: list what metadata will be wiped.
+    std::wstring confirm =
+        L"将清除当前文档的全部元数据（文档内容不受影响）：\n\n"
+        L"  - 文档信息：标题、作者、主题、关键词\n"
+        L"  - 生成/转换工具（Creator、Producer）\n"
+        L"  - 创建时间与修改时间\n"
+        L"  - XMP 元数据（含拍摄设备、地理位置、自定义属性等隐藏信息）\n\n"
+        L"注意：此操作会直接修改当前文档，Acrobat 将在关闭时提示保存。\n\n是否继续？";
+    if (MessageBoxW(NULL, confirm.c_str(), L"WipePDF 清除元数据确认", MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+
+    MetadataCleanResult res = MetadataService::cleanActiveDocument();
+
+    std::wstring msg = L"元数据清除完成！\n\n";
+    msg += L"  - XMP 元数据流：" + std::wstring(res.xmpReplaced ? L"已重置为空" : L"重置失败（文档可能受保护）") + L"\n";
+    msg += L"  - 文档信息条目：" + std::to_wstring(res.removedInfoKeys) + L" 项已删除\n";
+    msg += L"\n文档内容未做任何改动。\n请按 Ctrl+S 保存，或直接关闭文档（Acrobat 会提示保存）。";
+    MessageBoxW(NULL, msg.c_str(), L"WipePDF 元数据清除完成", MB_OK | MB_ICONINFORMATION);
+}
+
 void MenuHandler::onShowSettings() {
     ShowSettingsDialog();
 }
