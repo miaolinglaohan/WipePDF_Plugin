@@ -1,4 +1,6 @@
 #include "MetadataService.h"
+#include "BackupService.h"
+#include "WatermarkService.h"
 #include <string>
 #include <vector>
 
@@ -105,6 +107,80 @@ MetadataCleanResult MetadataService::cleanDocument(PDDoc pdDoc) {
     PDDocSetFlags(pdDoc, PDDocNeedsSave);
 
     return res;
+}
+
+BatchMetadataResult MetadataService::cleanBatch(const std::vector<std::wstring> &filePaths) {
+    BatchMetadataResult result;
+    result.totalFiles = static_cast<int>(filePaths.size());
+    if (filePaths.empty()) return result;
+
+    for (const auto &fullPath : filePaths) {
+        ASText diPath = ASTextFromUnicode((const ASUTF16Val *)fullPath.c_str(), kUTF16HostEndian);
+        if (!diPath) {
+            result.errors.push_back(fullPath + L"（无法解析文件路径）");
+            continue;
+        }
+
+        ASPathName path = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diPath, NULL);
+        ASTextDestroy(diPath);
+        if (!path) {
+            result.errors.push_back(fullPath + L"（无法创建系统文件路径）");
+            continue;
+        }
+
+        PDDoc doc = NULL;
+        DURING
+            doc = PDDocOpen(path, ASGetDefaultFileSys(), NULL, false);
+        HANDLER
+            char errBuf[256] = {0};
+            ASGetErrorString(ERRORCODE, errBuf, sizeof(errBuf));
+            std::wstring wErr = Utf8ToWString(errBuf);
+            result.errors.push_back(fullPath + (wErr.empty() ? L"（无法打开文档）" : L"（打开失败: " + wErr + L"）"));
+            doc = NULL;
+        END_HANDLER
+
+        ASFileSysReleasePath(ASGetDefaultFileSys(), path);
+
+        if (!doc) {
+            continue;
+        }
+
+        // Slight sleep to ensure unique millisecond timestamp in backup file name
+        Sleep(2);
+
+        bool docSuccess = false;
+        DURING
+            // 1. Safe automatic backup to %TEMP%\WipePDF_Backups\ before any alteration
+            BackupService::CreateBackup(doc);
+
+            // 2. Clear all metadata (XMP + Info dictionary)
+            MetadataCleanResult mRes = cleanDocument(doc);
+
+            // 3. Physical Linear Erasure: Save with full rewrite and garbage collection
+            // to completely remove unreferenced metadata objects from the binary stream.
+            PDDocSave(doc, (PDSaveFull | PDSaveCopy | PDSaveCollectGarbage), NULL, ASGetDefaultFileSys(), NULL, NULL);
+
+            result.totalRemovedInfoKeys += mRes.removedInfoKeys;
+            if (mRes.xmpReplaced) {
+                result.totalXmpReplaced++;
+            }
+            docSuccess = true;
+        HANDLER
+            char errBuf[256] = {0};
+            ASGetErrorString(ERRORCODE, errBuf, sizeof(errBuf));
+            std::wstring wErr = Utf8ToWString(errBuf);
+            result.errors.push_back(fullPath + (wErr.empty() ? L"（保存或清除元数据失败）" : L"（处理失败: " + wErr + L"）"));
+            docSuccess = false;
+        END_HANDLER
+
+        PDDocClose(doc);
+
+        if (docSuccess) {
+            result.successFiles++;
+        }
+    }
+
+    return result;
 }
 
 } // namespace wipepdf

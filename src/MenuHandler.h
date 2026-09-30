@@ -13,6 +13,7 @@ public:
     static void onCleanBatch();
     static void onSelectionTool();
     static void onCleanMetadata();
+    static void onCleanBatchMetadata();
     static void onOpenBackupFolder();
     static void onClearBackups();
     static void onShowSettings();

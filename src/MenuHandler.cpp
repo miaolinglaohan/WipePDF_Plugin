@@ -131,6 +131,7 @@ static AVMenuItem gEditItemClean = NULL;
 static AVMenuItem gItemSelectionTool = NULL;
 static AVMenuItem gItemWhiteout = NULL;
 static AVMenuItem gItemMetadata = NULL;
+static AVMenuItem gItemBatchMetadata = NULL;
 static AVMenuItem gItemOpenBackupFolder = NULL;
 static AVMenuItem gItemClearBackups = NULL;
 
@@ -167,6 +168,11 @@ ACCB1 void ACCB2 OnSelectionToolProc(void *clientData) {
 ACCB1 void ACCB2 OnCleanMetadataProc(void *clientData) {
     (void)clientData;
     MenuHandler::onCleanMetadata();
+}
+
+ACCB1 void ACCB2 OnCleanBatchMetadataProc(void *clientData) {
+    (void)clientData;
+    MenuHandler::onCleanBatchMetadata();
 }
 
 ACCB1 void ACCB2 OnOpenBackupFolderProc(void *clientData) {
@@ -232,6 +238,9 @@ void MenuHandler::setupMenus() {
         gItemBatch = CreateUnicodeMenuItem(L"批量文档水印清理...", "ADBE:WipePDF:Batch", OnCleanBatchProc, NULL);
         if (gItemBatch) AVMenuAddMenuItem(gWipePDFMenu, gItemBatch, APPEND_MENUITEM);
 
+        gItemBatchMetadata = CreateUnicodeMenuItem(L"批量文档元数据清理...", "ADBE:WipePDF:BatchMetadata", OnCleanBatchMetadataProc, NULL);
+        if (gItemBatchMetadata) AVMenuAddMenuItem(gWipePDFMenu, gItemBatchMetadata, APPEND_MENUITEM);
+
         gItemMetadata = CreateUnicodeMenuItem(L"一键清除当前文档元数据", "ADBE:WipePDF:CleanMetadata", OnCleanMetadataProc, OnDocOpenEnabledProc);
         if (gItemMetadata) AVMenuAddMenuItem(gWipePDFMenu, gItemMetadata, APPEND_MENUITEM);
 
@@ -270,13 +279,13 @@ void MenuHandler::cleanupMenus() {
     // ownership, so touching items after the menu is released would be a
     // use-after-free).
     AVMenuItem items[] = { gItemClean, gItemSelectionTool, gItemWhiteout, gItemInspect,
-                           gItemBatch, gItemMetadata, gItemOpenBackupFolder, gItemClearBackups,
+                           gItemBatch, gItemBatchMetadata, gItemMetadata, gItemOpenBackupFolder, gItemClearBackups,
                            gItemSettings, gItemAbout, gEditItemClean };
     for (AVMenuItem item : items) {
         if (item) { AVMenuItemRemove(item); AVMenuItemRelease(item); }
     }
     gItemClean = gItemSelectionTool = gItemWhiteout = gItemInspect = NULL;
-    gItemBatch = gItemMetadata = gItemOpenBackupFolder = gItemClearBackups = NULL;
+    gItemBatch = gItemBatchMetadata = gItemMetadata = gItemOpenBackupFolder = gItemClearBackups = NULL;
     gItemSettings = gItemAbout = NULL;
     gEditItemClean = NULL;
 
@@ -492,6 +501,88 @@ void MenuHandler::onCleanMetadata() {
     MessageBoxW(NULL, msg.c_str(), L"WipePDF 元数据清除完成", MB_OK | MB_ICONINFORMATION);
 }
 
+void MenuHandler::onCleanBatchMetadata() {
+    // Multi-select PDF files via native open dialog.
+    wchar_t fileBuf[32768] = {0};
+    OPENFILENAMEW ofn;
+    memset(&ofn, 0, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = NULL;
+    ofn.lpstrFilter = L"PDF 文档 (*.pdf)\0*.pdf\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = fileBuf;
+    ofn.nMaxFile = _countof(fileBuf);
+    ofn.lpstrTitle = L"选择要批量清除元数据的 PDF 文件（可多选）";
+    ofn.Flags = OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_EXPLORER;
+
+    if (!GetOpenFileNameW(&ofn)) return;
+
+    // Parse multi-select buffer: first string is directory, then filenames.
+    std::wstring dir = fileBuf;
+    size_t offset = dir.size() + 1;
+    std::vector<std::wstring> files;
+    if (fileBuf[offset] != L'\0') {
+        while (fileBuf[offset] != L'\0') {
+            files.push_back(std::wstring(&fileBuf[offset]));
+            offset += files.back().size() + 1;
+        }
+    } else {
+        // Single file selected.
+        files.push_back(dir);
+        dir.clear();
+    }
+
+    if (files.empty()) return;
+
+    std::vector<std::wstring> fullPaths;
+    fullPaths.reserve(files.size());
+    for (const auto &f : files) {
+        fullPaths.push_back(dir.empty() ? f : dir + L"\\" + f);
+    }
+
+    // Confirmation dialog with clear security assurances
+    std::wstring confirm = L"将在以下 " + std::to_wstring(files.size()) + L" 个文件上执行元数据彻底清除：\n\n";
+    size_t previewCount = files.size() > 8 ? 8 : files.size();
+    for (size_t i = 0; i < previewCount; ++i) {
+        confirm += L"  - " + files[i] + L"\n";
+    }
+    if (files.size() > 8) {
+        confirm += L"  ... （共 " + std::to_wstring(files.size()) + L" 个文件）\n";
+    }
+    confirm += L"\n安全保障与操作说明：\n"
+               L"  1. 每个文件在修改前均会自动在安全备份目录生成备份；\n"
+               L"  2. 彻底清除文档标题、作者、创建工具、创建/修改日期及全部 XMP 扩展流；\n"
+               L"  3. 采用物理覆写（PDSaveFull + 垃圾回收），防止残留元数据被二进制读取；\n"
+               L"  4. 文档正文图文、格式、注释完全保持原样，不做任何改动。\n\n"
+               L"是否立即开始批量处理？";
+
+    if (MessageBoxW(NULL, confirm.c_str(), L"WipePDF 批量清除元数据确认", MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+
+    // Execute batch clean
+    BatchMetadataResult res = MetadataService::cleanBatch(fullPaths);
+
+    // Summary dialog
+    std::wstring msg = L"批量清除元数据完成！\n\n";
+    msg += L"  处理文件：   " + std::to_wstring(res.totalFiles) + L" 个（成功 " + std::to_wstring(res.successFiles) + L" 个";
+    if (!res.errors.empty()) {
+        msg += L"，失败 " + std::to_wstring(res.errors.size()) + L" 个";
+    }
+    msg += L"）\n";
+    msg += L"  - XMP 元数据流重置：" + std::to_wstring(res.totalXmpReplaced) + L" 个文档\n";
+    msg += L"  - 文档信息条目删除：" + std::to_wstring(res.totalRemovedInfoKeys) + L" 项\n\n";
+    msg += L"安全提示：修改前已自动备份至专属安全备份文件夹。\n"
+           L"（可通过主菜单“打开安全备份文件夹”随时查验）\n";
+
+    if (!res.errors.empty()) {
+        msg += L"\n以下文件未能处理：\n";
+        for (const auto &e : res.errors) {
+            msg += L"  - " + e + L"\n";
+        }
+    }
+
+    MessageBoxW(NULL, msg.c_str(), L"WipePDF 批量元数据清除结果", MB_OK | (res.errors.empty() ? MB_ICONINFORMATION : MB_ICONWARNING));
+}
+
 void MenuHandler::onOpenBackupFolder() {
     if (!BackupService::OpenBackupFolder()) {
         std::wstring dir = BackupService::GetBackupDirectory();
@@ -530,7 +621,7 @@ void MenuHandler::onShowSettings() {
     ShowSettingsDialog();
 }
 void MenuHandler::onAbout() {
-    MessageBoxW(NULL, L"WipePDF Pro\nv1.6.0", L"WipePDF", MB_OK);
+    MessageBoxW(NULL, L"WipePDF Pro\nv1.7.0", L"WipePDF", MB_OK);
 }
 
 } // namespace wipepdf
