@@ -5,6 +5,16 @@
 
 namespace wipepdf {
 
+// Convert a UTF-8 byte string (keywords, PDF text runs) into a wide string
+// for display. Widening byte-by-byte garbles any non-ASCII content.
+inline std::wstring Utf8ToWString(const std::string &s) {
+    if (s.empty()) return std::wstring();
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), NULL, 0);
+    std::wstring out(len > 0 ? len : 0, L'\0');
+    if (len > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &out[0], len);
+    return out;
+}
+
 struct TargetFingerprint {
     bool active = false;
     ASInt32 type = -1; // kPDEImage, kPDEText, kPDEPath
@@ -45,10 +55,11 @@ struct TargetFingerprint {
 struct CleanOptions {
     // Default rules: CONSERVATIVE for one-click clean - only highly reliable,
     // content-safe heuristics are on. Riskier geometry heuristics (bottom
-    // strips, pattern fills) default OFF so real content is never removed;
-    // the manual point-and-click flow is the precise, human-verified path.
-    bool removeTransparentText = false; // RenderMode=3 / Opacity=0 (risky to OCR, OFF) // RenderMode=3 / Opacity=0 (reliable)
-    bool removeLinks = true;           // Link annotations (safe)
+    // strips, pattern fills), link annotations and transparent text default
+    // OFF so real content is never removed; the manual point-and-click flow
+    // is the precise, human-verified path.
+    bool removeTransparentText = false; // RenderMode=3 / Opacity=0 (risky to OCR, OFF)
+    bool removeLinks = false;          // ALL Link annots incl. TOC/cross-refs (OFF)
     bool removeKeywordText = true;     // URL/brand keyword text w/ size guard
     bool removeBottomStrip = false;    // bottom-edge strips - OFF (risky)
     bool removePatternFills = false;   // pattern fills - OFF (risky)
@@ -63,10 +74,12 @@ struct CleanOptions {
         "扫描全能王", "CamScanner", "免费注册", "biaozhun"
     };
     
+    // Promotion/drainage words that are unlikely to appear in normal body
+    // text. Keep this list narrow: every entry here can remove the whole
+    // matching text run anywhere in the document.
     std::vector<std::string> customKeywords = {
         "淘宝", "微信", "加群", "公众号", // 推广引流
-        "水印", "盗版", "暴力", "破解",   // 版权提示
-        "扫描", "备注",                   // CamScanner 页脚等
+        "盗版",                          // 版权提示
     };
 };
 
@@ -102,7 +115,11 @@ struct CleanResult {
     int removedBottomStrips = 0;
     int removedImages = 0;
     int removedTargetFingers = 0;
-    
+
+    // Path of the pre-modification backup copy in %TEMP% (empty when the
+    // backup could not be created). Informational; add() does not merge it.
+    std::wstring backupPath;
+
     void add(const CleanResult& other) {
         totalRemoved += other.totalRemoved;
         removedLinks += other.removedLinks;
@@ -124,11 +141,13 @@ struct WhiteoutResult {
 
 class WatermarkService {
 public:
+    // Save a full copy of the document to %TEMP%\WipePDF_backup_<tick>.pdf.
+    // Returns the backup path, or an empty string when the backup could not
+    // be created (path resolution or save failure).
+    static std::wstring BackupDocumentToTemp(PDDoc pddoc);
+
     static CleanResult cleanActiveDocument(const CleanOptions &opts = CleanOptions());
     static CleanResult cleanDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
-    // Count how many elements would be removed (no modification), used to
-    // preview the deletion scope before the user confirms.
-    static CleanResult countDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
     static std::vector<WatermarkCandidate> scanDocument(PDDoc pddoc, const CleanOptions &opts = CleanOptions());
     static CleanResult executePlan(PDDoc pddoc, const std::vector<WatermarkCandidate>& plan, const CleanOptions &opts = CleanOptions());
     // Option A: Lossless vector whiteout patch applied over fused watermarks
@@ -140,9 +159,7 @@ public:
 
 private:
     static CleanResult cleanPageContent(PDPage page, PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox);
-    static CleanResult countPageContent(PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox);
     static CleanResult cleanContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox);
-    static CleanResult countContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox);
     static void scanContainer(ASInt32 pageIndex, PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox, std::vector<WatermarkCandidate>& outCandidates);
     static CleanResult executeContainerPlan(ASInt32 pageIndex, PDEElement container, const std::vector<WatermarkCandidate>& plan, const CleanOptions &opts, const ASFixedRect &cropBox);
 

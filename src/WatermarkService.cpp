@@ -150,6 +150,35 @@ static bool FingerprintExactMatch(const std::string &raw, const std::string &fpR
     return false;
 }
 
+// Save a full, independent copy of the current document state to %TEMP%.
+// Callers treat the returned path as a restore point BEFORE modifying the
+// document. Returns an empty string when the backup cannot be created.
+std::wstring WatermarkService::BackupDocumentToTemp(PDDoc pddoc) {
+    if (!pddoc) return std::wstring();
+
+    wchar_t tempDir[MAX_PATH] = {0};
+    if (GetTempPathW(MAX_PATH, tempDir) == 0) return std::wstring();
+
+    std::wstring backupPath = std::wstring(tempDir) + L"WipePDF_backup_" +
+                              std::to_wstring(GetTickCount64()) + L".pdf";
+    ASText diText = ASTextFromUnicode((const ASUTF16Val *)backupPath.c_str(), kUTF16HostEndian);
+    if (!diText) return std::wstring();
+
+    ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
+    ASTextDestroy(diText);
+    if (!backupPathName) return std::wstring();
+
+    PDDocSave(pddoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
+    ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
+
+    // Only advertise the backup when the file actually exists on disk.
+    DWORD attrs = GetFileAttributesW(backupPath.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return std::wstring();
+    }
+    return backupPath;
+}
+
 CleanResult WatermarkService::cleanActiveDocument(const CleanOptions &opts) {
     AVDoc avDoc = AVAppGetActiveDoc();
     if (!avDoc) return CleanResult();
@@ -162,7 +191,12 @@ CleanResult WatermarkService::cleanActiveDocument(const CleanOptions &opts) {
 CleanResult WatermarkService::cleanDocument(PDDoc pddoc, const CleanOptions &opts) {
     CleanResult totalRes;
     if (!pddoc) return totalRes;
-    
+
+    // Safety net covering every destructive entry point that runs the full
+    // rule set (one-click clean and batch): snapshot the pristine document
+    // before touching it.
+    totalRes.backupPath = BackupDocumentToTemp(pddoc);
+
     ASInt32 numPages = PDDocGetNumPages(pddoc);
 
     for (ASInt32 p = 0; p < numPages; ++p) {
@@ -247,114 +281,6 @@ bool WatermarkService::fingerprintPositionMatches(const TargetFingerprint &fp, c
     if (fp.relH > 0.0f && std::fabs(relH - fp.relH) > fp.relH * kSizeTol) return false;
 
     return true;
-}
-
-CleanResult WatermarkService::countDocument(PDDoc pddoc, const CleanOptions &opts) {
-    CleanResult total;
-    if (!pddoc) return total;
-
-    ASInt32 numPages = PDDocGetNumPages(pddoc);
-    for (ASInt32 p = 0; p < numPages; ++p) {
-        PDPage page = PDDocAcquirePage(pddoc, p);
-        if (!page) continue;
-
-        ASFixedRect cropBox;
-        PDPageGetCropBox(page, &cropBox);
-
-        if (opts.removeLinks) {
-            ASInt32 numAnnots = PDPageGetNumAnnots(page);
-            for (ASInt32 a = 0; a < numAnnots; ++a) {
-                PDAnnot annot = PDPageGetAnnot(page, a);
-                if (PDAnnotIsValid(annot)) {
-                    ASAtom subtype = PDAnnotGetSubtype(annot);
-                    if (subtype == ASAtomFromString("Link")) {
-                        total.removedLinks++;
-                        total.totalRemoved++;
-                    }
-                }
-            }
-        }
-
-        PDEContent content = PDPageAcquirePDEContent(page, gExtensionID);
-        if (content) {
-            CleanResult res = countPageContent(content, opts, cropBox);
-            total.add(res);
-            PDPageReleasePDEContent(page, gExtensionID);
-        }
-
-        PDPageRelease(page);
-    }
-    return total;
-}
-
-CleanResult WatermarkService::countPageContent(PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox) {
-    CleanResult res;
-    ASInt32 numElems = PDEContentGetNumElems(content);
-    bool watermarkOnly = opts.targetFingerprint.active && opts.targetFingerprint.isWatermarkMarked;
-    for (ASInt32 i = 0; i < numElems; ++i) {
-        PDEElement elem = PDEContentGetElem(content, i);
-        if (!elem) continue;
-
-        ASInt32 type = PDEObjectGetType((PDEObject)elem);
-
-        if (watermarkOnly) {
-            if (type == kPDEContainer && WatermarkService::isWatermarkMarkedContainer(elem)) {
-                res.totalRemoved++;
-                res.removedTargetFingers++;
-            }
-            continue;
-        }
-
-        if (type == kPDEText) {
-            std::string matchType, kw;
-            std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchType, kw);
-            if (!runs.empty()) {
-                res.totalRemoved++;
-                if (matchType == "Target") res.removedTargetFingers++;
-                else if (matchType == "Transparent") res.removedTransparentText++;
-                else if (matchType == "Keyword") res.removedKeywordText++;
-            }
-        } else if (type == kPDEPath) {
-            std::string matchType;
-            if (WatermarkService::isWatermarkPath((PDEPath)elem, opts, cropBox, matchType)) {
-                res.totalRemoved++;
-                if (matchType == "Target") res.removedTargetFingers++;
-                else if (matchType == "Pattern") res.removedPatternPaths++;
-                else if (matchType == "BottomStrip") res.removedBottomStrips++;
-            }
-        } else if (type == kPDEImage) {
-            std::string matchType;
-            if (WatermarkService::isWatermarkImage((PDEImage)elem, opts, cropBox, matchType)) {
-                res.totalRemoved++;
-                if (matchType == "Target") res.removedTargetFingers++;
-                else if (matchType == "BottomStrip") res.removedBottomStrips++;
-                else res.removedImages++;
-            }
-        } else if (type == kPDEForm || type == kPDEContainer) {
-            if (type == kPDEContainer && WatermarkService::isWatermarkMarkedContainer(elem)) {
-                res.totalRemoved++;
-                res.removedTargetFingers++;
-                continue;
-            }
-            CleanResult formRes = countContainer(elem, opts, cropBox);
-            res.add(formRes);
-        }
-    }
-    return res;
-}
-
-CleanResult WatermarkService::countContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox) {
-    CleanResult res;
-    ASInt32 ctype = PDEObjectGetType((PDEObject)container);
-    PDEContent inner = NULL;
-    if (ctype == kPDEForm) {
-        inner = PDEFormGetContent((PDEForm)container);
-    } else if (ctype == kPDEContainer) {
-        inner = PDEContainerGetContent((PDEContainer)container);
-    }
-    if (!inner) return res;
-    res = countPageContent(inner, opts, cropBox);
-    return res;
 }
 
 CleanResult WatermarkService::cleanPageContent(PDPage page, PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox) {
@@ -592,43 +518,31 @@ std::vector<ASInt32> WatermarkService::getWatermarkTextRuns(PDEText text, const 
                     if (c >= 0x80) { asciiOnly = false; break; }
                 }
 
-                // URL / scanner-brand watermark keywords. These strongly
-                // indicate a watermark; require a minimum size so real body
-                // text URLs (small, inline) are not removed.
-                bool isUrlLike = (s.find("http") != std::string::npos ||
-                                  s.find("www.") != std::string::npos ||
-                                  s.find(".com") != std::string::npos ||
-                                  s.find(".cn") != std::string::npos);
-                if (asciiOnly && isUrlLike && fontSize >= 16.0f) {
-                    outMatchedType = "Keyword";
-                    outMatchedKeyword = "URL Watermark";
-                    matchedRuns.push_back(r);
-                    continue;
-                }
-                // KeywordInRun matches the exact GBK/UTF-16 byte patterns of
-                // the keywords, so genuine Chinese keywords (test1) match and
-                // random CID glyph codes virtually never do. ASCII keywords
-                // ("www.", ".com") are only matched on ASCII runs so glyph
-                // codes cannot accidentally hit those short patterns.
+                // URL / scanner-brand keywords. ASCII keywords (URLs) only
+                // match at watermark sizes (>= 16pt) so small body-text URLs
+                // (inline links, bibliography entries) are never removed.
+                // Chinese keywords are multi-char brand phrases whose exact
+                // GBK/UTF-16 byte patterns virtually never occur in random
+                // CID glyph codes (KeywordInRun).
                 for (const auto &kw : opts.watermarkKeywords) {
                     bool kwAscii = (kw.find_first_not_of(" -~") == std::string::npos);
-                    if (kwAscii && !asciiOnly) continue;
+                    if (kwAscii && (!asciiOnly || fontSize < 16.0f)) continue;
                     if (KeywordInRun(s, kw)) {
                         outMatchedType = "Keyword";
                         outMatchedKeyword = kw;
                         matchedRuns.push_back(r);
-                    continue;
+                        continue;
                     }
                 }
 
                 for (const auto &kw : opts.customKeywords) {
                     bool kwAscii = (kw.find_first_not_of(" -~") == std::string::npos);
-                    if (kwAscii && !asciiOnly) continue;
+                    if (kwAscii && (!asciiOnly || fontSize < 16.0f)) continue;
                     if (KeywordInRun(s, kw)) {
                         outMatchedType = "Keyword";
                         outMatchedKeyword = kw;
                         matchedRuns.push_back(r);
-                    continue;
+                        continue;
                     }
                 }
 
@@ -804,7 +718,15 @@ PageInspectResult WatermarkService::inspectPage(PDDoc pddoc, ASInt32 pageIndex, 
     ASFixedRect cropBox;
     PDPageGetCropBox(page, &cropBox);
 
-    res.linkAnnotations = PDPageGetNumAnnots(page);
+    // Count only /Link subtype annotations, matching what one-click clean
+    // would remove (PDPageGetNumAnnots includes every annot type).
+    ASInt32 numAnnots = PDPageGetNumAnnots(page);
+    for (ASInt32 a = 0; a < numAnnots; ++a) {
+        PDAnnot annot = PDPageGetAnnot(page, a);
+        if (PDAnnotIsValid(annot) && PDAnnotGetSubtype(annot) == ASAtomFromString("Link")) {
+            res.linkAnnotations++;
+        }
+    }
 
     PDEContent content = PDPageAcquirePDEContent(page, gExtensionID);
     if (content) {
@@ -1112,9 +1034,8 @@ CleanResult WatermarkService::executePlan(PDDoc pddoc, const std::vector<Waterma
             if (changed) {
                 PDPageSetPDEContent(page, gExtensionID);
                 PDPageNotifyContentsDidChange(page);
-            } else {
-                PDPageReleasePDEContent(page, gExtensionID);
             }
+            PDPageReleasePDEContent(page, gExtensionID);
         }
         PDPageRelease(page);
     }
@@ -1129,23 +1050,7 @@ WhiteoutResult WatermarkService::applyWhiteoutPatch(PDDoc pddoc, const ASFixedRe
     if (numPages <= 0) return res;
 
     // 1. Create safety backup copy before modifying the document
-    wchar_t tempDir[MAX_PATH] = {0};
-    if (GetTempPathW(MAX_PATH, tempDir) > 0) {
-        res.backupPath = std::wstring(tempDir) + L"WipePDF_backup_" + std::to_wstring(GetTickCount64()) + L".pdf";
-        ASText diText = ASTextFromUnicode((const ASUTF16Val *)res.backupPath.c_str(), kUTF16HostEndian);
-        if (diText) {
-            ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
-            ASTextDestroy(diText);
-            if (backupPathName) {
-                PDDocSave(pddoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
-                ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
-            } else {
-                res.backupPath.clear();
-            }
-        } else {
-            res.backupPath.clear();
-        }
-    }
+    res.backupPath = BackupDocumentToTemp(pddoc);
 
     // 2. Obtain reference page geometry for relative coordinate calculations
     ASFixedRect refCropBox;

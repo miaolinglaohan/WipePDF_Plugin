@@ -89,7 +89,7 @@ static void ShowSettingsDialog() {
     CreateCheckbox(hDlg, L"清除透明/隐形文字（RenderMode=3、Opacity=0）", IDC_CHK_TRANSPARENT, 20, y, 370, 22, gSettings.removeTransparentText); y += 30;
     CreateCheckbox(hDlg, L"清除全页 Pattern 图案填充与底纹", IDC_CHK_PATTERN, 20, y, 370, 22, gSettings.removePatternFills); y += 30;
     CreateCheckbox(hDlg, L"清除关键词水印文本（URL、推广词等）", IDC_CHK_KEYWORD, 20, y, 370, 22, gSettings.removeKeywordText); y += 30;
-    CreateCheckbox(hDlg, L"清除推广链接注解（Link）", IDC_CHK_LINKS, 20, y, 370, 22, gSettings.removeLinks); y += 30;
+    CreateCheckbox(hDlg, L"清除链接注解（含目录跳转/外部链接，默认关闭）", IDC_CHK_LINKS, 20, y, 370, 22, gSettings.removeLinks); y += 30;
     CreateCheckbox(hDlg, L"清除页面底部通栏与贴底小图", IDC_CHK_BOTTOMSTRIP, 20, y, 370, 22, gSettings.removeBottomStrip); y += 44;
 
     CreateWindowExW(0, L"BUTTON", L"确定",
@@ -240,11 +240,20 @@ void MenuHandler::setupMenus() {
 }
 
 void MenuHandler::cleanupMenus() {
+    // Release child items BEFORE the menu that hosts them, and release every
+    // item created in setupMenus (AVMenuAddMenuItem does not transfer
+    // ownership, so touching items after the menu is released would be a
+    // use-after-free).
+    AVMenuItem items[] = { gItemClean, gItemSelectionTool, gItemWhiteout, gItemInspect,
+                           gItemBatch, gItemMetadata, gItemSettings, gItemAbout, gEditItemClean };
+    for (AVMenuItem item : items) {
+        if (item) { AVMenuItemRemove(item); AVMenuItemRelease(item); }
+    }
+    gItemClean = gItemSelectionTool = gItemWhiteout = gItemInspect = NULL;
+    gItemBatch = gItemMetadata = gItemSettings = gItemAbout = NULL;
+    gEditItemClean = NULL;
+
     if (gWipePDFMenu) { AVMenuRemove(gWipePDFMenu); AVMenuRelease(gWipePDFMenu); gWipePDFMenu = NULL; }
-    if (gItemSelectionTool) { AVMenuItemRemove(gItemSelectionTool); AVMenuItemRelease(gItemSelectionTool); gItemSelectionTool = NULL; }
-    if (gItemWhiteout) { AVMenuItemRemove(gItemWhiteout); AVMenuItemRelease(gItemWhiteout); gItemWhiteout = NULL; }
-    if (gItemMetadata) { AVMenuItemRemove(gItemMetadata); AVMenuItemRelease(gItemMetadata); gItemMetadata = NULL; }
-    if (gEditItemClean) { AVMenuItemRemove(gEditItemClean); AVMenuItemRelease(gEditItemClean); gEditItemClean = NULL; }
 }
 
 void MenuHandler::onCleanActiveDoc() {
@@ -270,6 +279,9 @@ void MenuHandler::onCleanActiveDoc() {
     }
     
     msg += L"\n页面已即时刷新，您可以直接保存文档。";
+    if (!res.backupPath.empty()) {
+        msg += L"\n\n⚠️ 操作前已自动备份原文档至：\n    " + res.backupPath + L"\n    如误删可用该文件恢复。";
+    }
     MessageBoxW(NULL, msg.c_str(), L"WipePDF 水印清理成功", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -320,7 +332,7 @@ void MenuHandler::onInspectCurrentPage() {
     if (!r.detectedKeywords.empty()) {
         msg += L"\n命中关键词：";
         for (const auto &kw : r.detectedKeywords) {
-            msg += L"\n  - " + std::wstring(kw.begin(), kw.end());
+            msg += L"\n  - " + wipepdf::Utf8ToWString(kw);
         }
     }
 
@@ -421,7 +433,7 @@ void MenuHandler::onCleanBatch() {
         for (const auto &e : errors) msg += L"  - " + e + L"\n";
     }
 
-    msg += L"\n注意：已处理的文件已直接覆盖保存原文件。";
+    msg += L"\n注意：已处理的文件已直接覆盖保存原文件。\n每个文件处理前均已在 %TEMP% 目录自动生成 WipePDF_backup_*.pdf 备份。";
     MessageBoxW(NULL, msg.c_str(), L"WipePDF 批量清理完成", MB_OK | MB_ICONINFORMATION);
 }
 void MenuHandler::onCleanMetadata() {
@@ -457,7 +469,7 @@ void MenuHandler::onShowSettings() {
     ShowSettingsDialog();
 }
 void MenuHandler::onAbout() {
-    MessageBoxW(NULL, L"WipePDF Pro\nv1.0.0", L"WipePDF", MB_OK);
+    MessageBoxW(NULL, L"WipePDF Pro\nv1.5.1", L"WipePDF", MB_OK);
 }
 
 } // namespace wipepdf

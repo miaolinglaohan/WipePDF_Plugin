@@ -115,19 +115,6 @@ static void DiagLog(const char *fmt, ...) {
     }
 }
 
-// Transform a point in local coordinates into parent/page coordinates using
-// a PDF transformation matrix (column-vector convention, ASFixedMatrix).
-static ASFixedPoint MatrixTransformPoint(const ASFixedMatrix *m, const ASFixedPoint *p) {
-    ASFixedPoint out;
-    ASFixedMatrixTransform(&out, (ASFixedMatrixP)m, (ASFixedPointP)p);
-    return out;
-}
-
-// Transform a rectangle (bbox) into parent/page coordinates via a matrix.
-static void MatrixTransformRect(const ASFixedMatrix *m, const ASFixedRect *r, ASFixedRect *out) {
-    ASFixedMatrixTransformRect(out, (ASFixedMatrixP)m, (ASFixedRectP)r);
-}
-
 AVTool SelectionTool::gSelectionTool = NULL;
 AVTool SelectionTool::gPreviousTool = NULL;
 
@@ -291,126 +278,6 @@ bool SelectionTool::ExtractContainerFingerprint(PDEElement container, const ASFi
                 PDETextGetText((PDEText)elem, kPDETextRun, 0, (ASUns8*)&buf[0]);
                 fp.textContent = buf;
             }
-            return true;
-        }
-    }
-    return false;
-}
-
-bool SelectionTool::HitTestFormContent(PDEElement container, const ASFixedPoint &pagePt,
-                                       const ASFixedMatrix *parentMatrix, TargetFingerprint &fp) {
-    // Get the inner content depending on the container kind.
-    ASInt32 ctype = PDEObjectGetType((PDEObject)container);
-    PDEContent inner = NULL;
-    if (ctype == kPDEForm) {
-        inner = PDEFormGetContent((PDEForm)container);
-    } else if (ctype == kPDEContainer) {
-        inner = PDEContainerGetContent((PDEContainer)container);
-    }
-    if (!inner) return false;
-
-    // Important: a marked-content Container (/Artifact BDC..EMC) does NOT
-    // introduce a coordinate transform - its children live in the parent's
-    // (page) coordinate space. A Form XObject DOES: child coordinates must be
-    // transformed by the Form's matrix. `parentMatrix` here is the transform
-    // from this container's content space into page space.
-    ASInt32 numElems = PDEContentGetNumElems(inner);
-    for (ASInt32 i = numElems - 1; i >= 0; --i) {
-        PDEElement elem = PDEContentGetElem(inner, i);
-        if (!elem) continue;
-
-        ASInt32 type = PDEObjectGetType((PDEObject)elem);
-        ASFixedRect bbox;
-        PDEElementGetBBox(elem, &bbox);
-
-        // Nested container/form: recurse with the correct accumulated matrix.
-        if (type == kPDEForm || type == kPDEContainer) {
-            ASFixedMatrix total;
-            if (type == kPDEForm) {
-                // Form child: its content coordinates are transformed by the
-                // Form's own matrix first, then by the parent's matrix.
-                // ASFixedMatrixConcat(result, m1, m2) computes m2 x m1, so to
-                // get (parent x child) we pass (child, parent).
-                ASFixedMatrix childMatrix;
-                PDEElementGetMatrix(elem, &childMatrix);
-                ASFixedMatrixConcat(&total, &childMatrix, parentMatrix);
-            } else {
-                // Container child: no coordinate change; pass parent matrix.
-                total = *parentMatrix;
-            }
-            if (HitTestFormContent(elem, pagePt, &total, fp)) {
-                return true;
-            }
-            continue;
-        }
-
-        // For a non-container child, its own matrix maps its user space
-        // coordinates into the parent (container) content space. Combined
-        // with parentMatrix (content -> page) we get the page transform.
-        // PDEElementGetMatrix returns identity for text, and the real cm
-        // matrix for images/paths; it is NOT valid for containers (handled
-        // above) and we ignore it here.
-        ASFixedMatrix elemMatrix;
-        PDEElementGetMatrix(elem, &elemMatrix);
-        ASFixedMatrix toPage;
-        // ASFixedMatrixConcat(result, m1, m2) computes m2 x m1, so passing
-        // (elemMatrix, parentMatrix) yields parentMatrix x elemMatrix, i.e.
-        // element user space -> page space.
-        ASFixedMatrixConcat(&toPage, &elemMatrix, parentMatrix);
-
-        // Transform the child bbox into page coordinates.
-        ASFixedRect pageBBox;
-        MatrixTransformRect(&toPage, &bbox, &pageBBox);
-        DiagLog("    form child[%d] type=%d local=(%.1f,%.1f)-(%.1f,%.1f) page=(%.1f,%.1f)-(%.1f,%.1f)",
-                i, type,
-                ASFixedToFloat(bbox.left), ASFixedToFloat(bbox.bottom),
-                ASFixedToFloat(bbox.right), ASFixedToFloat(bbox.top),
-                ASFixedToFloat(pageBBox.left), ASFixedToFloat(pageBBox.bottom),
-                ASFixedToFloat(pageBBox.right), ASFixedToFloat(pageBBox.top));
-
-        if (pagePt.h >= pageBBox.left && pagePt.h <= pageBBox.right &&
-            pagePt.v >= pageBBox.bottom && pagePt.v <= pageBBox.top) {
-            // Fill type-specific fingerprint fields (dimensions/pixels/text).
-            TargetFingerprint tmp;
-            tmp.active = true;
-            // Record the full element->page matrix so position matching later
-            // can transform other candidates into page space correctly.
-            tmp.inForm = true;
-            tmp.formMatrix = toPage;
-            if (type == kPDEImage) {
-                tmp.type = kPDEImage;
-                tmp.width = ASFixedToFloat(pageBBox.right - pageBBox.left);
-                tmp.height = ASFixedToFloat(pageBBox.top - pageBBox.bottom);
-                PDEImageAttrs attrs;
-                memset(&attrs, 0, sizeof(attrs));
-                PDEImageGetAttrs((PDEImage)elem, &attrs, sizeof(attrs));
-                tmp.pixelWidth = attrs.width;
-                tmp.pixelHeight = attrs.height;
-            } else if (type == kPDEPath) {
-                tmp.type = kPDEPath;
-                tmp.bboxWidth = ASFixedToFloat(pageBBox.right - pageBBox.left);
-                tmp.bboxHeight = ASFixedToFloat(pageBBox.top - pageBBox.bottom);
-                PDEGraphicState gState;
-                memset(&gState, 0, sizeof(gState));
-                PDEElementGetGState(elem, &gState, sizeof(gState));
-                if (gState.fillColorSpec.space != NULL) {
-                    ASAtom spName = PDEColorSpaceGetName(gState.fillColorSpec.space);
-                    if (spName == ASAtomFromString("Pattern")) {
-                        tmp.isPattern = true;
-                    }
-                }
-            } else if (type == kPDEText) {
-                tmp.type = kPDEText;
-                ASInt32 len = PDETextGetText((PDEText)elem, kPDETextRun, 0, NULL);
-                if (len > 0) {
-                    std::string buf(len, '\0');
-                    PDETextGetText((PDEText)elem, kPDETextRun, 0, (ASUns8*)&buf[0]);
-                    tmp.textContent = buf;
-                }
-            } else {
-                continue; // not a pickable type
-            }
-            fp = tmp;
             return true;
         }
     }
@@ -757,7 +624,7 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
             msg += L"  - 目标类型：矢量图形\n  - 尺寸：" + std::to_wstring(fp.bboxWidth) + L" x " + std::to_wstring(fp.bboxHeight) + L"\n";
             if (fp.isPattern) msg += L"  - 填充：图案填充\n";
         } else if (fp.type == kPDEText) {
-            std::wstring wcontent(fp.textContent.begin(), fp.textContent.end());
+            std::wstring wcontent = wipepdf::Utf8ToWString(fp.textContent);
             msg += L"  - 目标类型：文本\n  - 内容：" + wcontent + L"\n";
         }
 
@@ -795,24 +662,7 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
             }
 
             // Safety backup
-            std::wstring backupPath;
-            wchar_t tempDir[MAX_PATH] = {0};
-            if (GetTempPathW(MAX_PATH, tempDir) > 0) {
-                backupPath = std::wstring(tempDir) + L"WipePDF_backup_" + std::to_wstring(GetTickCount64()) + L".pdf";
-                ASText diText = ASTextFromUnicode((const ASUTF16Val *)backupPath.c_str(), kUTF16HostEndian);
-                if (diText) {
-                    ASPathName backupPathName = ASFileSysCreatePathFromDIPathText(ASGetDefaultFileSys(), diText, NULL);
-                    ASTextDestroy(diText);
-                    if (backupPathName) {
-                        PDDocSave(pdDoc, (PDSaveFull | PDSaveCopy), backupPathName, ASGetDefaultFileSys(), NULL, NULL);
-                        ASFileSysReleasePath(ASGetDefaultFileSys(), backupPathName);
-                    } else {
-                        backupPath.clear();
-                    }
-                } else {
-                    backupPath.clear();
-                }
-            }
+            std::wstring backupPath = wipepdf::WatermarkService::BackupDocumentToTemp(pdDoc);
 
             // Execute removal plan
             wipepdf::CleanResult cleanRes = wipepdf::WatermarkService::executePlan(pdDoc, g_State.candidates, opts);

@@ -29,14 +29,6 @@ private:
     // Returns true if whiteout patch was applied (so caller can restore prior tool).
     static bool HandleBoxDrag(AVPageView pageView, const AVDevRect &dragRect);
 
-    // Recursively hit-test inside a Form XObject or marked-content Container
-    // (e.g. a /Artifact /Subtype /Watermark block). Child element bboxes are
-    // transformed into page coordinates using the accumulated matrix, so a
-    // watermark nested in a Form/Container is picked instead of the page
-    // background. Returns true and fills `fp` if a pickable element was hit.
-    static bool HitTestFormContent(PDEElement container, const ASFixedPoint &pagePt,
-                                   const ASFixedMatrix *parentMatrix, TargetFingerprint &fp);
-
     // Extract a fingerprint from a Form/Container that was hit. The container's
     // page-space bbox is used for size/position; pixel/text attributes come
     // from the first pickable child found in its content (no matrix math).
