@@ -145,20 +145,38 @@ BatchMetadataResult MetadataService::cleanBatch(const std::vector<std::wstring> 
             continue;
         }
 
-        // Slight sleep to ensure unique millisecond timestamp in backup file name
-        Sleep(2);
+        // 1. Safe automatic backup to %TEMP%\WipePDF_Backups\ before any
+        // alteration. Never touch the file when the backup cannot be created -
+        // a physical overwrite without a restore point is not acceptable.
+        std::wstring backupPath;
+        DURING
+            backupPath = BackupService::CreateBackup(doc);
+        HANDLER
+            char errBuf[256] = {0};
+            ASGetErrorString(ERRORCODE, errBuf, sizeof(errBuf));
+            std::wstring wErr = Utf8ToWString(errBuf);
+            result.errors.push_back(fullPath + (wErr.empty() ? L"（备份创建失败，已跳过该文件）" : L"（备份创建失败: " + wErr + L"，已跳过）"));
+            backupPath.clear();
+        END_HANDLER
+
+        if (backupPath.empty()) {
+            DURING
+                PDDocClose(doc);
+            HANDLER
+                ; // Swallow close-time errors - nothing to recover.
+            END_HANDLER
+            continue;
+        }
 
         bool docSuccess = false;
         DURING
-            // 1. Safe automatic backup to %TEMP%\WipePDF_Backups\ before any alteration
-            BackupService::CreateBackup(doc);
-
             // 2. Clear all metadata (XMP + Info dictionary)
             MetadataCleanResult mRes = cleanDocument(doc);
 
             // 3. Physical Linear Erasure: Save with full rewrite and garbage collection
             // to completely remove unreferenced metadata objects from the binary stream.
-            PDDocSave(doc, (PDSaveFull | PDSaveCopy | PDSaveCollectGarbage), NULL, ASGetDefaultFileSys(), NULL, NULL);
+            // In-place save (NULL path): PDSaveCopy is for save-to-new-path only.
+            PDDocSave(doc, (PDSaveFull | PDSaveCollectGarbage), NULL, ASGetDefaultFileSys(), NULL, NULL);
 
             result.totalRemovedInfoKeys += mRes.removedInfoKeys;
             if (mRes.xmpReplaced) {
@@ -173,7 +191,11 @@ BatchMetadataResult MetadataService::cleanBatch(const std::vector<std::wstring> 
             docSuccess = false;
         END_HANDLER
 
-        PDDocClose(doc);
+        DURING
+            PDDocClose(doc);
+        HANDLER
+            ; // Swallow close-time errors - the result is already recorded.
+        END_HANDLER
 
         if (docSuccess) {
             result.successFiles++;

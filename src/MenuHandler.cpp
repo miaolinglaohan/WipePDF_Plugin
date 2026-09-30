@@ -446,7 +446,8 @@ void MenuHandler::onCleanBatch() {
         total.add(res);
 
         if (res.totalRemoved > 0) {
-            PDDocSave(doc, (PDSaveFull | PDSaveCopy), NULL, ASGetDefaultFileSys(), NULL, NULL);
+            // In-place save (NULL path): PDSaveCopy is for save-to-new-path only.
+            PDDocSave(doc, PDSaveFull, NULL, ASGetDefaultFileSys(), NULL, NULL);
         }
         PDDocClose(doc);
         okCount++;
@@ -469,7 +470,7 @@ void MenuHandler::onCleanBatch() {
         for (const auto &e : errors) msg += L"  - " + e + L"\n";
     }
 
-    msg += L"\n注意：已处理的文件已直接覆盖保存原文件。\n每个文件处理前均已在 %TEMP% 目录自动生成 WipePDF_backup_*.pdf 备份。";
+    msg += L"\n注意：已处理的文件已直接覆盖保存原文件。\n每个文件处理前均已在安全备份目录（%TEMP%\\WipePDF_Backups\\）自动生成备份，\n可通过主菜单“打开安全备份文件夹”查验。";
     MessageBoxW(NULL, msg.c_str(), L"WipePDF 批量清理完成", MB_OK | MB_ICONINFORMATION);
 }
 void MenuHandler::onCleanMetadata() {
@@ -488,15 +489,29 @@ void MenuHandler::onCleanMetadata() {
         L"  - 生成/转换工具（Creator、Producer）\n"
         L"  - 创建时间与修改时间\n"
         L"  - XMP 元数据（含拍摄设备、地理位置、自定义属性等隐藏信息）\n\n"
-        L"注意：此操作会直接修改当前文档，Acrobat 将在关闭时提示保存。\n\n是否继续？";
+        L"注意：操作前会自动在安全备份目录生成原文档备份；\n此操作会直接修改当前文档，Acrobat 将在关闭时提示保存。\n\n是否继续？";
     if (MessageBoxW(NULL, confirm.c_str(), L"WipePDF 清除元数据确认", MB_YESNO | MB_ICONQUESTION) != IDYES)
         return;
+
+    // Safety backup of the pristine document before modification (aligned
+    // with the batch metadata flow - single-doc clean gets the same net).
+    std::wstring backupPath;
+    DURING
+        backupPath = WatermarkService::BackupDocumentToTemp(pdDoc);
+    HANDLER
+        backupPath.clear();
+    END_HANDLER
 
     MetadataCleanResult res = MetadataService::cleanActiveDocument();
 
     std::wstring msg = L"元数据清除完成！\n\n";
     msg += L"  - XMP 元数据流：" + std::wstring(res.xmpReplaced ? L"已重置为空" : L"重置失败（文档可能受保护）") + L"\n";
     msg += L"  - 文档信息条目：" + std::to_wstring(res.removedInfoKeys) + L" 项已删除\n";
+    if (!backupPath.empty()) {
+        msg += L"\n操作前已自动备份原文档，可通过主菜单“打开安全备份文件夹”查验。";
+    } else {
+        msg += L"\n⚠️ 备份创建失败，本次操作未生成备份文件。";
+    }
     msg += L"\n文档内容未做任何改动。\n请按 Ctrl+S 保存，或直接关闭文档（Acrobat 会提示保存）。";
     MessageBoxW(NULL, msg.c_str(), L"WipePDF 元数据清除完成", MB_OK | MB_ICONINFORMATION);
 }
