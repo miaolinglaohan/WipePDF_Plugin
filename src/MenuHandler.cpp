@@ -636,7 +636,7 @@ void MenuHandler::onShowSettings() {
     ShowSettingsDialog();
 }
 void MenuHandler::onAbout() {
-    MessageBoxW(NULL, L"WipePDF Pro\nv1.7.0", L"WipePDF", MB_OK);
+    MessageBoxW(NULL, L"WipePDF Pro\nv1.8.0", L"WipePDF", MB_OK);
 }
 
 } // namespace wipepdf
