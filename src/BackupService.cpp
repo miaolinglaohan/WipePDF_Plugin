@@ -29,6 +29,80 @@ static int DeleteMatchingFiles(const std::wstring &dir, const std::wstring &patt
     return count;
 }
 
+// Sanitize a raw document name for safe use in a Windows filename.
+// Strips the .pdf extension, replaces illegal characters, trims
+// whitespace/dots, and truncates to leave room for the prefix + timestamp.
+static std::wstring SanitizeForFileName(const std::wstring &raw) {
+    if (raw.empty()) return raw;
+    std::wstring name = raw;
+
+    // Strip .pdf extension (case-insensitive)
+    if (name.size() >= 4 && _wcsicmp(name.substr(name.size() - 4).c_str(), L".pdf") == 0) {
+        name = name.substr(0, name.size() - 4);
+    }
+
+    // Replace Windows-illegal filename characters and control chars
+    for (auto &ch : name) {
+        if (ch < 32 || ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' ||
+            ch == L'?' || ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+            ch = L'_';
+        }
+    }
+
+    // Trim leading/trailing spaces and dots (Windows forbids them at boundaries)
+    size_t start = name.find_first_not_of(L" .");
+    size_t end   = name.find_last_not_of(L" .");
+    if (start == std::wstring::npos) return L"";
+    name = name.substr(start, end - start + 1);
+
+    // Truncate to 60 chars to stay well within MAX_PATH.
+    // Full pattern: WipePDF_backup_<name>_<YYYYMMDD_HHMMSS_mmm>.pdf
+    //               15 + name + 1 + 19 + 4 = 39 + name  →  39 + 60 = 99
+    const size_t kMaxNameLen = 60;
+    if (name.size() > kMaxNameLen) {
+        name = name.substr(0, kMaxNameLen);
+        size_t end2 = name.find_last_not_of(L" .");
+        if (end2 == std::wstring::npos) return L"";
+        name = name.substr(0, end2 + 1);
+    }
+
+    return name;
+}
+
+// Try to extract the leaf filename from an already-opened PDDoc by
+// querying its backing ASFile.  Returns an empty string when the doc
+// has no associated file (e.g. created in memory and not yet saved).
+static std::wstring ExtractDocNameFromPDDoc(PDDoc pddoc) {
+    std::wstring name;
+    if (!pddoc) return name;
+
+    DURING
+        ASFile asFile = PDDocGetFile(pddoc);
+        if (asFile) {
+            ASPathName pathName = ASFileAcquirePathName(asFile);
+            if (pathName) {
+                char nameBuf[MAX_PATH] = {0};
+                ASErrorCode err = ASFileSysGetNameFromPath(
+                    ASGetDefaultFileSys(), pathName, nameBuf, sizeof(nameBuf));
+                ASFileSysReleasePath(ASGetDefaultFileSys(), pathName);
+
+                if (err == 0 && nameBuf[0] != '\0') {
+                    // Convert from platform encoding (ANSI codepage) to wstring
+                    int wlen = MultiByteToWideChar(CP_ACP, 0, nameBuf, -1, NULL, 0);
+                    if (wlen > 1) {
+                        name.resize(wlen - 1);
+                        MultiByteToWideChar(CP_ACP, 0, nameBuf, -1, &name[0], wlen);
+                    }
+                }
+            }
+        }
+    HANDLER
+        name.clear();
+    END_HANDLER
+
+    return name;
+}
+
 std::wstring BackupService::GetBackupDirectory() {
     wchar_t tempDir[MAX_PATH] = {0};
     if (GetTempPathW(MAX_PATH, tempDir) == 0) return std::wstring();
@@ -87,7 +161,7 @@ int BackupService::PurgeExpired(int maxAgeDays) {
     return purgedCount;
 }
 
-std::wstring BackupService::CreateBackup(PDDoc pddoc, int maxAgeDays) {
+std::wstring BackupService::CreateBackup(PDDoc pddoc, const std::wstring &docName, int maxAgeDays) {
     if (!pddoc) return std::wstring();
 
     // 1. Quietly purge expired backups to avoid accumulating disk garbage
@@ -98,20 +172,39 @@ std::wstring BackupService::CreateBackup(PDDoc pddoc, int maxAgeDays) {
     std::wstring dir = GetBackupDirectory();
     if (dir.empty()) return std::wstring();
 
-    // 2. Format a human-readable local timestamp: YYYYMMDD_HHMMSS_mmm
+    // 2. Resolve and sanitize the document name for the backup filename.
+    //    Priority: explicit docName → auto-extract from PDDoc → pure timestamp
+    std::wstring safeName;
+    if (!docName.empty()) {
+        safeName = SanitizeForFileName(docName);
+    }
+    if (safeName.empty()) {
+        std::wstring autoName = ExtractDocNameFromPDDoc(pddoc);
+        safeName = SanitizeForFileName(autoName);
+    }
+
+    // 3. Format a human-readable local timestamp: YYYYMMDD_HHMMSS_mmm
     SYSTEMTIME st;
     GetLocalTime(&st);
     wchar_t timeBuf[64];
     swprintf_s(timeBuf, L"%04d%02d%02d_%02d%02d%02d_%03d",
               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
 
+    // 4. Build backup path:
+    //      WipePDF_backup_<docName>_<timestamp>.pdf   (when name is available)
+    //      WipePDF_backup_<timestamp>.pdf             (fallback: pure timestamp)
+    std::wstring prefix = L"WipePDF_backup_";
+    if (!safeName.empty()) {
+        prefix += safeName + L"_";
+    }
+
     // Guarantee a unique path even if two backups land within the same
     // millisecond (GetLocalTime resolution): probe the filesystem and append
     // a sequence suffix while the name is taken.
-    std::wstring backupPath = dir + L"WipePDF_backup_" + timeBuf + L".pdf";
+    std::wstring backupPath = dir + prefix + timeBuf + L".pdf";
     int seq = 1;
     while (GetFileAttributesW(backupPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        backupPath = dir + L"WipePDF_backup_" + timeBuf + L"_" + std::to_wstring(seq++) + L".pdf";
+        backupPath = dir + prefix + timeBuf + L"_" + std::to_wstring(seq++) + L".pdf";
     }
 
     ASText diText = ASTextFromUnicode((const ASUTF16Val *)backupPath.c_str(), kUTF16HostEndian);

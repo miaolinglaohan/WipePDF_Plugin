@@ -148,9 +148,14 @@ BatchMetadataResult MetadataService::cleanBatch(const std::vector<std::wstring> 
         // 1. Safe automatic backup to %TEMP%\WipePDF_Backups\ before any
         // alteration. Never touch the file when the backup cannot be created -
         // a physical overwrite without a restore point is not acceptable.
+        // Extract the leaf filename for human-readable backup naming.
+        std::wstring docBaseName;
+        size_t lastSlash = fullPath.find_last_of(L"\\/");
+        docBaseName = (lastSlash != std::wstring::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
+
         std::wstring backupPath;
         DURING
-            backupPath = BackupService::CreateBackup(doc);
+            backupPath = BackupService::CreateBackup(doc, docBaseName);
         HANDLER
             char errBuf[256] = {0};
             ASGetErrorString(ERRORCODE, errBuf, sizeof(errBuf));

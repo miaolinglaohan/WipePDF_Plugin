@@ -16,9 +16,13 @@ public:
     static std::wstring GetBackupDirectory();
 
     // Saves a full backup copy of pddoc to the dedicated backup directory.
+    // docName: original document name (e.g. "report.pdf") embedded in the
+    //          backup filename for human readability. When empty, the name is
+    //          auto-extracted from the PDDoc's file path. Falls back to a pure
+    //          timestamp name if extraction fails (e.g. unsaved document).
     // Automatically purges backups older than maxAgeDays (default 7 days).
     // Returns the generated backup file path, or empty string on failure.
-    static std::wstring CreateBackup(PDDoc pddoc, int maxAgeDays = 7);
+    static std::wstring CreateBackup(PDDoc pddoc, const std::wstring &docName = L"", int maxAgeDays = 7);
 
     // Opens the dedicated backup directory in Windows File Explorer.
     static bool OpenBackupFolder();
