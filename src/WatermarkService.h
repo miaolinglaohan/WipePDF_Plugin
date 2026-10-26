@@ -161,6 +161,7 @@ private:
     static CleanResult cleanPageContent(PDPage page, PDEContent content, const CleanOptions &opts, const ASFixedRect &cropBox);
     static CleanResult cleanContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox);
     static void scanContainer(ASInt32 pageIndex, PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox, std::vector<WatermarkCandidate>& outCandidates);
+    static void inspectContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox, PageInspectResult &res);
     static CleanResult executeContainerPlan(ASInt32 pageIndex, PDEElement container, const std::vector<WatermarkCandidate>& plan, const CleanOptions &opts, const ASFixedRect &cropBox);
 
     static std::vector<ASInt32> getWatermarkTextRuns(PDEText text, const CleanOptions &opts, const ASFixedRect &cropBox, std::string &outMatchedType, std::string &outMatchedKeyword);

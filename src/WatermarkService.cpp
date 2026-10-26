@@ -687,6 +687,50 @@ bool WatermarkService::isWatermarkImage(PDEImage img, const CleanOptions &opts, 
     return false;
 }
 
+void WatermarkService::inspectContainer(PDEElement container, const CleanOptions &opts, const ASFixedRect &cropBox, PageInspectResult &res) {
+    ASInt32 ctype = PDEObjectGetType((PDEObject)container);
+    PDEContent inner = NULL;
+    if (ctype == kPDEForm) {
+        inner = PDEFormGetContent((PDEForm)container);
+    } else if (ctype == kPDEContainer) {
+        inner = PDEContainerGetContent((PDEContainer)container);
+    }
+    if (!inner) return;
+
+    ASInt32 numElems = PDEContentGetNumElems(inner);
+    for (ASInt32 i = 0; i < numElems; ++i) {
+        PDEElement elem = PDEContentGetElem(inner, i);
+        if (!elem) continue;
+
+        ASInt32 type = PDEObjectGetType((PDEObject)elem);
+        if (type == kPDEText) {
+            res.textElements++;
+            std::string matchedType, kw;
+            std::vector<ASInt32> runs = WatermarkService::getWatermarkTextRuns((PDEText)elem, opts, cropBox, matchedType, kw);
+            if (!runs.empty()) {
+                if (matchedType == "Transparent") {
+                    res.transparentTextCount++;
+                } else if (matchedType == "Keyword") {
+                    res.keywordWatermarkCount++;
+                    if (std::find(res.detectedKeywords.begin(), res.detectedKeywords.end(), kw) == res.detectedKeywords.end()) {
+                        res.detectedKeywords.push_back(kw);
+                    }
+                }
+            }
+        } else if (type == kPDEPath) {
+            res.pathElements++;
+            std::string matchedType;
+            if (WatermarkService::isWatermarkPath((PDEPath)elem, opts, cropBox, matchedType)) {
+                res.patternFillCount++;
+            }
+        } else if (type == kPDEImage) {
+            res.imageElements++;
+        } else if (type == kPDEForm || type == kPDEContainer) {
+            inspectContainer(elem, opts, cropBox, res);
+        }
+    }
+}
+
 PageInspectResult WatermarkService::inspectPage(PDDoc pddoc, ASInt32 pageIndex, const CleanOptions &opts) {
     PageInspectResult res;
     if (!pddoc) return res;
@@ -737,6 +781,8 @@ PageInspectResult WatermarkService::inspectPage(PDDoc pddoc, ASInt32 pageIndex, 
                 }
             } else if (type == kPDEImage) {
                 res.imageElements++;
+            } else if (type == kPDEForm || type == kPDEContainer) {
+                inspectContainer(elem, opts, cropBox, res);
             }
         }
         PDPageReleasePDEContent(page, gExtensionID);
@@ -781,8 +827,10 @@ void WatermarkService::scanContainer(ASInt32 pageIndex, PDEElement container, co
             ASFixedRect localBBox;
             PDEElementGetBBox(elem, &localBBox);
             ASFixedRect pageBBox = localBBox;
-            if (opts.targetFingerprint.active && opts.targetFingerprint.inForm) {
-                PageSpaceBBox(opts.targetFingerprint, localBBox, pageBBox);
+            if (container) {
+                // When matched inside a Form or Container, the container's
+                // own page-space bbox is the true on-page display rectangle.
+                PDEElementGetBBox(container, &pageBBox);
             }
             WatermarkCandidate cand;
             cand.pageIndex = pageIndex;

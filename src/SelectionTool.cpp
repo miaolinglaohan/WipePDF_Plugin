@@ -270,15 +270,20 @@ bool SelectionTool::ExtractContainerFingerprint(PDEElement container, const ASFi
             }
             return true;
         } else if (type == kPDEText) {
-            fp.active = true;
-            fp.type = kPDEText;
-            ASInt32 len = PDETextGetText((PDEText)elem, kPDETextRun, 0, NULL);
-            if (len > 0) {
-                std::string buf(len, '\0');
-                PDETextGetText((PDEText)elem, kPDETextRun, 0, (ASUns8*)&buf[0]);
-                fp.textContent = buf;
+            ASInt32 numRuns = PDETextGetNumRuns((PDEText)elem);
+            for (ASInt32 r = 0; r < numRuns; ++r) {
+                ASInt32 len = PDETextGetText((PDEText)elem, kPDETextRun, r, NULL);
+                if (len > 0) {
+                    std::string buf(len, '\0');
+                    PDETextGetText((PDEText)elem, kPDETextRun, r, (ASUns8*)&buf[0]);
+                    if (!buf.empty()) {
+                        fp.active = true;
+                        fp.type = kPDEText;
+                        fp.textContent = buf;
+                        return true;
+                    }
+                }
             }
-            return true;
         }
     }
     return false;
@@ -445,6 +450,15 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
     
     TargetFingerprint fp;
 
+    struct HitCandidate {
+        PDEElement elem = NULL;
+        ASInt32 type = -1;
+        ASFixedRect bbox = {0, 0, 0, 0};
+        TargetFingerprint fp;
+        int priority = 0;
+    };
+    std::vector<HitCandidate> hits;
+
     for (ASInt32 i = numElems - 1; i >= 0; --i) {
         PDEElement elem = PDEContentGetElem(content, i);
         if (!elem) continue;
@@ -455,91 +469,106 @@ bool SelectionTool::HandleClick(AVPageView pageView, ASInt16 x, ASInt16 y) {
         if (pagePt.h >= bbox.left && pagePt.h <= bbox.right &&
             pagePt.v >= bbox.bottom && pagePt.v <= bbox.top) {
 
-            clickedElem = elem;
-            clickedType = PDEObjectGetType((PDEObject)elem);
-            hitPageBBox = bbox;
-            DiagLog("  hit top elem[%d] type=%d bbox=(%.1f,%.1f)-(%.1f,%.1f)",
-                    i, clickedType, ASFixedToFloat(bbox.left), ASFixedToFloat(bbox.bottom),
-                    ASFixedToFloat(bbox.right), ASFixedToFloat(bbox.top));
+            ASInt32 elemType = PDEObjectGetType((PDEObject)elem);
+            HitCandidate hit;
+            hit.elem = elem;
+            hit.type = elemType;
+            hit.bbox = bbox;
 
-            // A Form XObject or marked-content Container (e.g. /Artifact
-            // /Subtype /Watermark block) is the watermark's own box: Acrobat
-            // has already computed its page-space bbox. We treat the container
-            // itself as the target and extract a fingerprint from its content
-            // (pixel dimensions, element type), WITHOUT attempting recursive
-            // matrix transforms which proved unreliable for nested content.
-            if (clickedType == kPDEForm || clickedType == kPDEContainer) {
-                TargetFingerprint nestedFp;
-                if (ExtractContainerFingerprint((PDEElement)elem, bbox, nestedFp)) {
-                    fp = nestedFp;
-                    fp.inForm = true;
-                    // Page-space position from the container's own bbox.
-                    fp.relX = ASFixedToFloat((bbox.left + bbox.right) / 2) / pageW;
-                    fp.relY = ASFixedToFloat((bbox.bottom + bbox.top) / 2) / pageH;
-                    fp.relW = ASFixedToFloat(bbox.right - bbox.left) / pageW;
-                    fp.relH = ASFixedToFloat(bbox.top - bbox.bottom) / pageH;
-                    DiagLog("  Container hit OK: type=%d pix=(%dx%d) rel=(%.2f,%.2f) relsize=(%.2f,%.2f)",
-                            fp.type, fp.pixelWidth, fp.pixelHeight, fp.relX, fp.relY, fp.relW, fp.relH);
-                    break;
-                }
-                DiagLog("  Container no pickable content; continuing to lower elements");
-                continue;
-            }
-            
             float bw = ASFixedToFloat(bbox.right - bbox.left);
             float bh = ASFixedToFloat(bbox.top - bbox.bottom);
             float cx = ASFixedToFloat((bbox.left + bbox.right) / 2);
             float cy = ASFixedToFloat((bbox.bottom + bbox.top) / 2);
 
-            // Normalized position/size used as a secondary fingerprint.
-            fp.relX = cx / pageW;
-            fp.relY = cy / pageH;
-            fp.relW = bw / pageW;
-            fp.relH = bh / pageH;
+            hit.fp.relX = cx / pageW;
+            hit.fp.relY = cy / pageH;
+            hit.fp.relW = bw / pageW;
+            hit.fp.relH = bh / pageH;
 
-            if (clickedType == kPDEImage) {
-                fp.active = true;
-                fp.type = kPDEImage;
-                fp.width = bw;
-                fp.height = bh;
+            DiagLog("  hit test elem[%d] type=%d bbox=(%.1f,%.1f)-(%.1f,%.1f)",
+                    i, elemType, ASFixedToFloat(bbox.left), ASFixedToFloat(bbox.bottom),
+                    ASFixedToFloat(bbox.right), ASFixedToFloat(bbox.top));
+
+            if (elemType == kPDEForm || elemType == kPDEContainer) {
+                TargetFingerprint nestedFp;
+                if (ExtractContainerFingerprint((PDEElement)elem, bbox, nestedFp)) {
+                    hit.fp = nestedFp;
+                    hit.fp.inForm = true;
+                    hit.fp.relX = cx / pageW;
+                    hit.fp.relY = cy / pageH;
+                    hit.fp.relW = bw / pageW;
+                    hit.fp.relH = bh / pageH;
+                    hit.priority = 40; // Form/Container containing pickable content (highest priority)
+                    hits.push_back(hit);
+                    continue;
+                }
+            } else if (elemType == kPDEImage) {
+                hit.fp.active = true;
+                hit.fp.type = kPDEImage;
+                hit.fp.width = bw;
+                hit.fp.height = bh;
 
                 PDEImageAttrs attrs;
                 memset(&attrs, 0, sizeof(attrs));
                 PDEImageGetAttrs((PDEImage)elem, &attrs, sizeof(attrs));
-                fp.pixelWidth = attrs.width;
-                fp.pixelHeight = attrs.height;
-                break;
-            } else if (clickedType == kPDEPath) {
-                fp.active = true;
-                fp.type = kPDEPath;
-                fp.bboxWidth = bw;
-                fp.bboxHeight = bh;
-                
+                hit.fp.pixelWidth = attrs.width;
+                hit.fp.pixelHeight = attrs.height;
+
+                bool isFullPageBg = (bw >= pageW * 0.85f && bh >= pageH * 0.85f);
+                hit.priority = isFullPageBg ? 5 : 30; // Watermark image: 30; Full-page scanned background: 5
+                hits.push_back(hit);
+            } else if (elemType == kPDEPath) {
+                hit.fp.active = true;
+                hit.fp.type = kPDEPath;
+                hit.fp.bboxWidth = bw;
+                hit.fp.bboxHeight = bh;
+
                 PDEGraphicState gState;
                 memset(&gState, 0, sizeof(gState));
                 PDEElementGetGState(elem, &gState, sizeof(gState));
                 if (gState.fillColorSpec.space != NULL) {
                     ASAtom spName = PDEColorSpaceGetName(gState.fillColorSpec.space);
                     if (spName == ASAtomFromString("Pattern")) {
-                        fp.isPattern = true;
+                        hit.fp.isPattern = true;
                     }
                 }
-                break;
-            } else if (clickedType == kPDEText) {
-                fp.active = true;
-                fp.type = kPDEText;
-                
+                hit.priority = 30;
+                hits.push_back(hit);
+            } else if (elemType == kPDEText) {
+                hit.fp.active = true;
+                hit.fp.type = kPDEText;
+
                 ASInt32 len = PDETextGetText((PDEText)elem, kPDETextRun, 0, NULL);
                 if (len > 0) {
                     std::string buf(len, '\0');
                     PDETextGetText((PDEText)elem, kPDETextRun, 0, (ASUns8*)&buf[0]);
-                    fp.textContent = buf;
+                    hit.fp.textContent = buf;
                 }
-                break;
+
+                PDETextState tState;
+                memset(&tState, 0, sizeof(tState));
+                PDETextGetTextState((PDEText)elem, kPDETextRun, 0, &tState, sizeof(tState));
+                bool isRenderMode3 = (tState.renderMode == 3);
+                hit.priority = isRenderMode3 ? 10 : 30; // Visible text: 30; Invisible OCR text: 10
+                hits.push_back(hit);
             }
         }
     }
-    
+
+    if (!hits.empty()) {
+        std::stable_sort(hits.begin(), hits.end(), [](const HitCandidate &a, const HitCandidate &b) {
+            return a.priority > b.priority;
+        });
+        clickedElem = hits[0].elem;
+        clickedType = hits[0].type;
+        hitPageBBox = hits[0].bbox;
+        fp = hits[0].fp;
+        DiagLog("  Selected best hit: type=%d priority=%d bbox=(%.1f,%.1f)-(%.1f,%.1f)",
+                clickedType, hits[0].priority,
+                ASFixedToFloat(hitPageBBox.left), ASFixedToFloat(hitPageBBox.bottom),
+                ASFixedToFloat(hitPageBBox.right), ASFixedToFloat(hitPageBBox.top));
+    }
+
     PDPageReleasePDEContent(page, gExtensionID);
 
     DiagLog("HandleClick final: fp.active=%d type=%d", fp.active ? 1 : 0, fp.type);
