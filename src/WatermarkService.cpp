@@ -158,6 +158,161 @@ std::wstring WatermarkService::BackupDocumentToTemp(PDDoc pddoc) {
     return BackupService::CreateBackup(pddoc);
 }
 
+// Helper: case-insensitive substring search
+static bool ContainsSubstrCaseInsensitive(const std::string &str, const std::string &sub) {
+    if (sub.empty() || str.size() < sub.size()) return false;
+    auto it = std::search(
+        str.begin(), str.end(),
+        sub.begin(), sub.end(),
+        [](char ch1, char ch2) { return std::tolower((unsigned char)ch1) == std::tolower((unsigned char)ch2); }
+    );
+    return it != str.end();
+}
+
+// Safely read up to 64KB of decoded text from a CosStream
+static std::string ReadCosStreamText(CosObj stmObj) {
+    if (CosObjGetType(stmObj) != CosStream) return std::string();
+
+    char *rawBuf = NULL;
+    ASTCount totalBytes = 0;
+
+    DURING
+        ASStm stm = CosStreamOpenStm(stmObj, cosOpenFiltered);
+        if (stm) {
+            const ASTCount maxRead = 65536;
+            rawBuf = (char*)ASmalloc(maxRead + 1);
+            if (rawBuf) {
+                ASTCount bytesRead = 0;
+                while (totalBytes < maxRead && 
+                      (bytesRead = ASStmRead(rawBuf + totalBytes, 1, maxRead - totalBytes, stm)) > 0) {
+                    totalBytes += bytesRead;
+                }
+                rawBuf[totalBytes] = '\0';
+            }
+            ASStmClose(stm);
+        }
+    HANDLER
+        if (rawBuf) {
+            ASfree(rawBuf);
+            rawBuf = NULL;
+        }
+        totalBytes = 0;
+    END_HANDLER
+
+    std::string result;
+    if (rawBuf && totalBytes > 0) {
+        result.assign(rawBuf, totalBytes);
+        ASfree(rawBuf);
+    } else if (rawBuf) {
+        ASfree(rawBuf);
+    }
+    return result;
+}
+
+// Direct CosArray stream removal for isolated watermark streams (e.g. WorkPDF or batch tools).
+// Bypasses PDPageSetPDEContent to preserve original streams and avoid Acrobat Error 16.
+static bool CleanCosWatermarkStreams(PDPage page, const CleanOptions &opts, CleanResult &outRes) {
+    if (!page) return false;
+
+    CosObj pageCos = PDPageGetCosObj(page);
+    if (CosObjGetType(pageCos) != CosDict) return false;
+
+    CosObj contentsObj = CosDictGet(pageCos, ASAtomFromString("Contents"));
+    if (CosObjGetType(contentsObj) != CosArray) return false;
+
+    ASInt32 numStreams = CosArrayLength(contentsObj);
+    if (numStreams <= 1) return false;
+
+    std::vector<std::string> searchKeywords;
+    if (opts.targetFingerprint.active && opts.targetFingerprint.type == kPDEText && !opts.targetFingerprint.textContent.empty()) {
+        searchKeywords.push_back(opts.targetFingerprint.textContent);
+    }
+    if (opts.removeKeywordText) {
+        for (const auto &kw : opts.watermarkKeywords) {
+            searchKeywords.push_back(kw);
+        }
+        for (const auto &kw : opts.customKeywords) {
+            searchKeywords.push_back(kw);
+        }
+    }
+    if (searchKeywords.empty()) return false;
+
+    CosObj resObj = CosDictGet(pageCos, ASAtomFromString("Resources"));
+    CosObj xobjDict = CosNewNull();
+    if (CosObjGetType(resObj) == CosDict) {
+        xobjDict = CosDictGet(resObj, ASAtomFromString("XObject"));
+    }
+
+    bool anyRemoved = false;
+
+    for (ASInt32 i = numStreams - 1; i >= 0; --i) {
+        CosObj stmObj = CosArrayGet(contentsObj, i);
+        if (CosObjGetType(stmObj) != CosStream) continue;
+
+        std::string stmData = ReadCosStreamText(stmObj);
+        if (stmData.empty() || stmData.size() > 2048) continue;
+
+        // Skip if stream draws images or complex page elements
+        if (stmData.find("/Image") != std::string::npos || stmData.find("BI\n") != std::string::npos) {
+            continue;
+        }
+
+        bool isWatermark = false;
+
+        // 1. Direct keyword match
+        for (const auto &kw : searchKeywords) {
+            if (ContainsSubstrCaseInsensitive(stmData, kw)) {
+                isWatermark = true;
+                break;
+            }
+        }
+
+        // 2. Check XObject invocation
+        if (!isWatermark && CosObjGetType(xobjDict) == CosDict) {
+            size_t pos = 0;
+            while ((pos = stmData.find(" Do", pos)) != std::string::npos) {
+                if (pos > 0) {
+                    size_t slashPos = stmData.rfind('/', pos);
+                    if (slashPos != std::string::npos && slashPos < pos) {
+                        std::string xname = stmData.substr(slashPos + 1, pos - (slashPos + 1));
+                        while (!xname.empty() && (xname.back() == ' ' || xname.back() == '\t' || xname.back() == '\r' || xname.back() == '\n')) {
+                            xname.pop_back();
+                        }
+                        if (!xname.empty()) {
+                            CosObj targetXObj = CosDictGet(xobjDict, ASAtomFromString(xname.c_str()));
+                            if (CosObjGetType(targetXObj) == CosStream) {
+                                std::string xdata = ReadCosStreamText(targetXObj);
+                                for (const auto &kw : searchKeywords) {
+                                    if (ContainsSubstrCaseInsensitive(xdata, kw)) {
+                                        isWatermark = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (isWatermark) break;
+                pos += 3;
+            }
+        }
+
+        if (isWatermark) {
+            CosArrayRemoveNth(contentsObj, i);
+            anyRemoved = true;
+            outRes.removedKeywordText++;
+            outRes.totalRemoved++;
+        }
+    }
+
+    if (anyRemoved) {
+        PDPageNotifyContentsDidChange(page);
+        return true;
+    }
+
+    return false;
+}
+
 CleanResult WatermarkService::cleanActiveDocument(const CleanOptions &opts) {
     AVDoc avDoc = AVAppGetActiveDoc();
     if (!avDoc) return CleanResult();
@@ -201,7 +356,15 @@ CleanResult WatermarkService::cleanDocument(PDDoc pddoc, const CleanOptions &opt
             }
         }
 
-        // 2. Clean PDE Elements
+        // 2. Direct CosArray stream removal (bypasses PDPageSetPDEContent to prevent Error 16)
+        CleanResult cosRes;
+        if (CleanCosWatermarkStreams(page, opts, cosRes)) {
+            totalRes.add(cosRes);
+            PDPageRelease(page);
+            continue;
+        }
+
+        // 3. Clean PDE Elements
         PDEContent content = PDPageAcquirePDEContent(page, gExtensionID);
         if (content) {
             CleanResult res = cleanPageContent(page, content, opts, cropBox);
@@ -1000,6 +1163,14 @@ CleanResult WatermarkService::executePlan(PDDoc pddoc, const std::vector<Waterma
 
         ASFixedRect cropBox;
         PDPageGetCropBox(page, &cropBox);
+
+        // CosArray stream-level removal (bypasses PDPageSetPDEContent to prevent Error 16)
+        CleanResult cosRes;
+        if (CleanCosWatermarkStreams(page, opts, cosRes)) {
+            res.add(cosRes);
+            PDPageRelease(page);
+            continue;
+        }
 
         PDEContent content = PDPageAcquirePDEContent(page, gExtensionID);
         if (content) {

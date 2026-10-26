@@ -129,6 +129,7 @@ void SelectionTool::RegisterTool() {
     gSelectionTool->Deactivate = ASCallbackCreateProto(DeactivateProcType, &SelectionTool::DeactivateProc);
     gSelectionTool->GetType = ASCallbackCreateProto(GetTypeProcType, &SelectionTool::GetTypeProc);
     gSelectionTool->DoClick = ASCallbackCreateProto(DoClickProcType, &SelectionTool::DoClickProc);
+    gSelectionTool->AdjustCursor = ASCallbackCreateProto(AdjustCursorProcType, &SelectionTool::AdjustCursorProc);
 
     // A tool must be registered with the viewer before it can be activated.
     // After this call the structure is owned by Acrobat and must not be freed.
@@ -154,11 +155,11 @@ void SelectionTool::ActivateTool(AVTool prevTool) {
     AVDoc avDoc = AVAppGetActiveDoc();
     if (!avDoc) return;
 
-    // Prefer the document-level tool API (recommended over AVAppSetActiveTool).
     gPreviousTool = prevTool ? prevTool : AVDocGetActiveTool(avDoc);
     if (!gPreviousTool) gPreviousTool = AVAppGetDefaultTool();
 
-    AVDocSetActiveTool(avDoc, gSelectionTool, false);
+    AVDocSetActiveTool(avDoc, gSelectionTool, true);
+    AVAppSetActiveTool(gSelectionTool, true);
 }
 
 ASBool ACCB1 SelectionTool::ComputeEnabledProc(void *data) {
@@ -174,6 +175,11 @@ void ACCB1 SelectionTool::DeactivateProc(AVTool tool) {
 
 ASAtom ACCB1 SelectionTool::GetTypeProc(AVTool tool) {
     return ASAtomFromString("WipePDF:SelectionTool");
+}
+
+ASBool ACCB1 SelectionTool::AdjustCursorProc(AVTool tool, AVPageView pageView, AVDevCoord x, AVDevCoord y) {
+    AVSysSetCursor(AVSysGetStandardCursor(CROSSHAIR_CURSOR));
+    return true; // Return true: we handled the cursor shape, DO NOT allow underlying layers (e.g. Acrobat auto-URL hot spots) to override cursor or clicks
 }
 
 

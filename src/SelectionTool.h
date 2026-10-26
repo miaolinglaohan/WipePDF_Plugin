@@ -20,6 +20,7 @@ private:
     static void ACCB1 DeactivateProc(AVTool tool);
     static ASAtom ACCB1 GetTypeProc(AVTool tool);
     static ASBool ACCB1 DoClickProc(AVTool tool, AVPageView pageView, ASInt16 x, ASInt16 y, ASInt16 flags, ASInt16 clickNo);
+    static ASBool ACCB1 AdjustCursorProc(AVTool tool, AVPageView pageView, AVDevCoord x, AVDevCoord y);
         
     // Hit testing logic. Returns true if the click hit a valid element and
     // the user confirmed deletion (so the caller can restore the prior tool).
